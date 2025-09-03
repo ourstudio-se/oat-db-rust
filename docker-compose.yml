@@ -1,0 +1,64 @@
+services:
+  # PostgreSQL database
+  postgres:
+    image: postgres:15
+    container_name: oatdb_postgres
+    environment:
+      POSTGRES_DB: oatdb
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: password
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+      - ./init-db.sql:/docker-entrypoint-initdb.d/init-db.sql:ro
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres -d oatdb"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+  # OAT DB Rust service
+  oat-db-rust:
+    build: 
+      context: .
+      dockerfile: Dockerfile
+    container_name: oatdb_service
+    environment:
+      # Database configuration
+      OAT_DATABASE_TYPE: postgres
+      DATABASE_URL: postgres://postgres:password@postgres:5432/oatdb
+      # Server configuration  
+      OAT_SERVER_HOST: 0.0.0.0
+      OAT_SERVER_PORT: 3001
+      # Rust specific
+      RUST_LOG: info
+    ports:
+      - "3001:3001"
+    depends_on:
+      postgres:
+        condition: service_healthy
+    restart: unless-stopped
+    volumes:
+      # Mount logs directory if needed
+      - ./logs:/app/logs
+
+  # Optional: pgAdmin for database management
+  pgadmin:
+    image: dpage/pgadmin4:latest
+    container_name: oatdb_pgadmin
+    environment:
+      PGADMIN_DEFAULT_EMAIL: admin@oatdb.com
+      PGADMIN_DEFAULT_PASSWORD: admin
+      PGADMIN_CONFIG_SERVER_MODE: 'False'
+    ports:
+      - "5050:80"
+    depends_on:
+      - postgres
+    volumes:
+      - pgadmin_data:/var/lib/pgadmin
+
+volumes:
+  postgres_data:
+  pgadmin_data:
