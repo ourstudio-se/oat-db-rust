@@ -120,7 +120,7 @@ pub struct SolverInfo {
 }
 
 /// Statistics about the solve operation
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]
 pub struct SolveStatistics {
     /// Number of instances in the configuration (queried + variable instances)
     pub total_instances: usize,
@@ -240,6 +240,104 @@ pub struct InstanceQueryRequest {
     /// If Some(vec), only the specified derived properties are calculated and included
     #[serde(skip_serializing_if = "Option::is_none")]
     pub derived_properties: Option<Vec<String>>,
+}
+
+/// Request for batch instance queries with multiple objectives
+/// Returns multiple configurations, one for each objective set
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct BatchInstanceQueryRequest {
+    /// List of objective sets to solve for
+    /// Each objective set will produce one configuration in the response
+    pub objectives: Vec<ObjectiveSet>,
+
+    /// Resolution policies for all queries
+    #[serde(default)]
+    pub policies: ResolutionPolicies,
+
+    /// Optional commit hash for point-in-time resolution
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub commit_hash: Option<String>,
+
+    /// Optional user metadata
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub user_metadata: Option<ArtifactUserMetadata>,
+
+    /// Optional context metadata  
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub context_metadata: Option<ResolutionContextMetadata>,
+
+    /// Optional list of derived property names to include in all responses
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub derived_properties: Option<Vec<String>>,
+
+    /// Whether to include detailed solve metadata in responses (default: false for performance)
+    #[serde(default)]
+    pub include_metadata: bool,
+}
+
+/// A single set of objectives for solving
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct ObjectiveSet {
+    /// Unique identifier for this objective set (for matching with results)
+    pub id: String,
+
+    /// Map of instance ID to objective weight (coefficient for optimization)
+    /// Positive weights favor selection, negative weights penalize selection
+    pub objectives: HashMap<String, f64>,
+
+    /// Optional name/description for this objective set
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub name: Option<String>,
+}
+
+/// Response containing multiple configuration solutions
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct BatchQueryResponse {
+    /// List of configuration results, one for each objective set
+    pub configurations: Vec<ConfigurationResult>,
+
+    /// Overall batch query metadata
+    pub batch_metadata: BatchQueryMetadata,
+}
+
+/// A single configuration result from batch solving
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct ConfigurationResult {
+    /// The objective set ID this configuration corresponds to
+    pub objective_id: String,
+
+    /// The resulting configuration artifact
+    pub artifact: ConfigurationArtifact,
+
+    /// Whether this configuration solved successfully
+    pub success: bool,
+
+    /// Error message if solution failed
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub error: Option<String>,
+}
+
+/// Metadata for batch query operations
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct BatchQueryMetadata {
+    /// Total time for the entire batch operation (milliseconds)
+    pub total_time_ms: u64,
+
+    /// Number of objectives processed
+    pub objectives_processed: usize,
+
+    /// Number of successful solutions
+    pub successful_solutions: usize,
+
+    /// Number of failed solutions
+    pub failed_solutions: usize,
+
+    /// Instance ID that was queried
+    pub queried_instance_id: String,
+
+    /// Database and branch context
+    pub database_id: String,
+    pub branch_id: String,
 }
 
 impl ConfigurationArtifact {
