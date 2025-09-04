@@ -12,6 +12,16 @@
       "method": "POST", 
       "path": "/databases/{db_id}/branches/{branch_id}/instances/{instance_id}/batch-query",
       "description": "Batch query for specific branch with multiple objectives"
+    },
+    {
+      "method": "POST",
+      "path": "/databases/{db_id}/branches/{branch_name}/working-commit/instances/{instance_id}/batch-query",
+      "description": "Batch query for working commit with multiple objectives"
+    },
+    {
+      "method": "POST",
+      "path": "/databases/{db_id}/commits/{commit_hash}/instances/{instance_id}/batch-query", 
+      "description": "Batch query for specific commit with multiple objectives"
     }
   ],
 

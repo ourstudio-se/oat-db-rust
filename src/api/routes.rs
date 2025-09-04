@@ -287,6 +287,16 @@ pub fn create_router<S: Store + 'static>() -> Router<Arc<S>> {
             "/databases/:db_id/branches/:branch_id/working-commit/instances/:instance_id",
             delete(handlers::delete_working_commit_instance::<S>),
         )
+        // Batch query endpoints for working commits
+        .route(
+            "/databases/:db_id/branches/:branch_id/working-commit/instances/:instance_id/batch-query",
+            post(handlers::batch_query_working_commit_instance_configuration::<S>),
+        )
+        // Batch query endpoints for specific commits
+        .route(
+            "/databases/:db_id/commits/:commit_hash/instances/:instance_id/batch-query",
+            post(handlers::batch_query_commit_instance_configuration::<S>),
+        )
         // Commit Tagging endpoints
         .route(
             "/commits/:commit_hash/tags",

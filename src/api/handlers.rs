@@ -7634,6 +7634,273 @@ async fn batch_query_instance_configuration_impl<S: Store>(
     Ok(Json(response))
 }
 
+/// Batch query/solve configurations for a specific instance in working commit
+pub async fn batch_query_working_commit_instance_configuration<S: Store + WorkingCommitStore>(
+    State(store): State<AppState<S>>,
+    Path((db_id, branch_name, instance_id)): Path<(Id, String, Id)>,
+    RequestJson(request): RequestJson<BatchInstanceQueryRequest>,
+) -> Result<Json<BatchQueryResponse>, (StatusCode, Json<ErrorResponse>)> {
+    use crate::logic::SolvePipeline;
+    use crate::model::{NewConfigurationArtifact, ResolutionContext};
+    use std::time::Instant;
+
+    let batch_start = Instant::now();
+
+    // Get the working commit for the branch
+    let working_commits = match store.list_working_commits_for_branch(&db_id, &branch_name).await {
+        Ok(commits) => commits,
+        Err(e) => {
+            return Err((
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(ErrorResponse::new(&e.to_string())),
+            ));
+        }
+    };
+
+    // Find the active working commit for this branch
+    let working_commit = working_commits
+        .into_iter()
+        .find(|wc| matches!(wc.status, crate::model::WorkingCommitStatus::Active))
+        .ok_or_else(|| {
+            (
+                StatusCode::NOT_FOUND,
+                Json(ErrorResponse::new("No active working commit found for this branch")),
+            )
+        })?;
+
+    // Verify instance exists in working commit
+    let instance_exists = working_commit
+        .instances_data
+        .iter()
+        .any(|inst| inst.id == instance_id);
+
+    if !instance_exists {
+        return Err((
+            StatusCode::NOT_FOUND,
+            Json(ErrorResponse::new("Instance not found in working commit")),
+        ));
+    }
+
+    // Build ResolutionContext for working commit
+    let resolution_context = ResolutionContext {
+        database_id: db_id.clone(),
+        branch_id: branch_name.clone(),
+        commit_hash: request.commit_hash.clone(),
+        policies: request.policies.clone(),
+        metadata: request.context_metadata.clone(),
+    };
+
+    // Process each objective set
+    let mut configurations = Vec::new();
+    let mut successful_solutions = 0;
+    let mut failed_solutions = 0;
+    
+    for objective_set in &request.objectives {
+        // Create NewConfigurationArtifact for the solve pipeline
+        let solve_request = NewConfigurationArtifact {
+            resolution_context: resolution_context.clone(),
+            user_metadata: request.user_metadata.clone(),
+        };
+
+        // Create solve pipeline and execute with objectives
+        let pipeline = SolvePipeline::new(&*store);
+        
+        match pipeline
+            .solve_instance_with_full_options(
+                solve_request, 
+                instance_id.clone(), 
+                objective_set.objectives.clone(),
+                request.derived_properties.clone(),
+                request.include_metadata
+            )
+            .await
+        {
+            Ok(artifact) => {
+                configurations.push(ConfigurationResult {
+                    objective_id: objective_set.id.clone(),
+                    artifact,
+                    success: true,
+                    error: None,
+                });
+                successful_solutions += 1;
+            }
+            Err(e) => {
+                // Create a minimal failed artifact to maintain response structure consistency
+                let failed_artifact = ConfigurationArtifact::new(
+                    generate_id(),
+                    resolution_context.clone(),
+                    request.user_metadata.clone(),
+                );
+                
+                configurations.push(ConfigurationResult {
+                    objective_id: objective_set.id.clone(),
+                    artifact: failed_artifact,
+                    success: false,
+                    error: Some(format!("Solve failed: {}", e)),
+                });
+                failed_solutions += 1;
+            }
+        }
+    }
+
+    let batch_metadata = BatchQueryMetadata {
+        total_time_ms: batch_start.elapsed().as_millis() as u64,
+        objectives_processed: request.objectives.len(),
+        successful_solutions,
+        failed_solutions,
+        queried_instance_id: instance_id,
+        database_id: db_id,
+        branch_id: branch_name,
+    };
+
+    let response = BatchQueryResponse {
+        configurations,
+        batch_metadata,
+    };
+
+    Ok(Json(response))
+}
+
+/// Batch query/solve configurations for a specific instance in a specific commit
+pub async fn batch_query_commit_instance_configuration<S: Store + CommitStore>(
+    State(store): State<AppState<S>>,
+    Path((db_id, commit_hash, instance_id)): Path<(Id, String, Id)>,
+    RequestJson(request): RequestJson<BatchInstanceQueryRequest>,
+) -> Result<Json<BatchQueryResponse>, (StatusCode, Json<ErrorResponse>)> {
+    use crate::logic::SolvePipeline;
+    use crate::model::{NewConfigurationArtifact, ResolutionContext};
+    use std::time::Instant;
+
+    let batch_start = Instant::now();
+
+    // Verify commit exists and belongs to the database
+    let commit = match store.get_commit(&commit_hash).await {
+        Ok(Some(commit)) => {
+            if commit.database_id != db_id {
+                return Err((
+                    StatusCode::NOT_FOUND,
+                    Json(ErrorResponse::new("Commit not found in this database")),
+                ));
+            }
+            commit
+        }
+        Ok(None) => {
+            return Err((
+                StatusCode::NOT_FOUND,
+                Json(ErrorResponse::new("Commit not found")),
+            ));
+        }
+        Err(e) => {
+            return Err((
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(ErrorResponse::new(&e.to_string())),
+            ));
+        }
+    };
+
+    // Get commit data and verify instance exists
+    let commit_data = match commit.get_data() {
+        Ok(data) => data,
+        Err(e) => {
+            return Err((
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(ErrorResponse::new(&format!("Failed to read commit data: {}", e))),
+            ));
+        }
+    };
+
+    let instance_exists = commit_data
+        .instances
+        .iter()
+        .any(|inst| inst.id == instance_id);
+
+    if !instance_exists {
+        return Err((
+            StatusCode::NOT_FOUND,
+            Json(ErrorResponse::new("Instance not found in commit")),
+        ));
+    }
+
+    // Build ResolutionContext for commit query
+    let resolution_context = ResolutionContext {
+        database_id: db_id.clone(),
+        branch_id: "commit".to_string(), // Use "commit" as branch_id for commit-specific queries
+        commit_hash: Some(commit_hash.clone()),
+        policies: request.policies.clone(),
+        metadata: request.context_metadata.clone(),
+    };
+
+    // Process each objective set
+    let mut configurations = Vec::new();
+    let mut successful_solutions = 0;
+    let mut failed_solutions = 0;
+    
+    for objective_set in &request.objectives {
+        // Create NewConfigurationArtifact for the solve pipeline
+        let solve_request = NewConfigurationArtifact {
+            resolution_context: resolution_context.clone(),
+            user_metadata: request.user_metadata.clone(),
+        };
+
+        // Create solve pipeline and execute with objectives
+        let pipeline = SolvePipeline::new(&*store);
+        
+        match pipeline
+            .solve_instance_with_full_options(
+                solve_request, 
+                instance_id.clone(), 
+                objective_set.objectives.clone(),
+                request.derived_properties.clone(),
+                request.include_metadata
+            )
+            .await
+        {
+            Ok(artifact) => {
+                configurations.push(ConfigurationResult {
+                    objective_id: objective_set.id.clone(),
+                    artifact,
+                    success: true,
+                    error: None,
+                });
+                successful_solutions += 1;
+            }
+            Err(e) => {
+                // Create a minimal failed artifact to maintain response structure consistency
+                let failed_artifact = ConfigurationArtifact::new(
+                    generate_id(),
+                    resolution_context.clone(),
+                    request.user_metadata.clone(),
+                );
+                
+                configurations.push(ConfigurationResult {
+                    objective_id: objective_set.id.clone(),
+                    artifact: failed_artifact,
+                    success: false,
+                    error: Some(format!("Solve failed: {}", e)),
+                });
+                failed_solutions += 1;
+            }
+        }
+    }
+
+    let batch_metadata = BatchQueryMetadata {
+        total_time_ms: batch_start.elapsed().as_millis() as u64,
+        objectives_processed: request.objectives.len(),
+        successful_solutions,
+        failed_solutions,
+        queried_instance_id: instance_id,
+        database_id: db_id,
+        branch_id: format!("commit:{}", commit_hash),
+    };
+
+    let response = BatchQueryResponse {
+        configurations,
+        batch_metadata,
+    };
+
+    Ok(Json(response))
+}
+
 // ========== GET Query Endpoints with URL Parameters ==========
 
 /// GET query endpoint for branch instances with URL parameters as solver objectives
