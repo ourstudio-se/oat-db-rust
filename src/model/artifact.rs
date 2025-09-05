@@ -338,6 +338,10 @@ pub struct BatchQueryMetadata {
     /// Database and branch context
     pub database_id: String,
     pub branch_id: String,
+    
+    /// Optional commit hash for point-in-time resolution
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub commit_hash: Option<String>,
 }
 
 impl ConfigurationArtifact {

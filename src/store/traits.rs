@@ -1,4 +1,4 @@
-use crate::model::{Branch, ClassDef, Commit, CommitData, Database, Id, Instance, InstanceFilter, NewCommit, NewWorkingCommit, Schema, WorkingCommit};
+use crate::model::{Branch, ClassDef, Commit, CommitData, Database, Id, Instance, InstanceFilter, NewCommit, NewWorkingCommit, Schema, WorkingCommit, CommitTag, NewCommitTag, TaggedCommit, TagQuery};
 use anyhow::Result;
 
 #[async_trait::async_trait]
@@ -122,4 +122,21 @@ pub trait WorkingCommitStore: Send + Sync {
     async fn get_active_working_commit_for_branch(&self, database_id: &Id, branch_name: &str) -> Result<Option<WorkingCommit>>;
 }
 
-pub trait Store: DatabaseStore + BranchStore + SchemaStore + InstanceStore + CommitStore + WorkingCommitStore + Send + Sync {}
+/// Store for managing commit tags
+#[async_trait::async_trait]
+pub trait TagStore: Send + Sync {
+    /// Create a new commit tag
+    async fn create_commit_tag(&self, tag: NewCommitTag) -> Result<CommitTag>;
+    /// Get all tags for a specific commit
+    async fn get_commit_tags(&self, commit_hash: &str) -> Result<Vec<CommitTag>>;
+    /// Delete a commit tag
+    async fn delete_commit_tag(&self, tag_id: i32) -> Result<bool>;
+    /// Search for commits by tag criteria
+    async fn search_commits_by_tags(&self, database_id: &Id, query: TagQuery) -> Result<Vec<TaggedCommit>>;
+    /// Get complete tagged commit information (commit + tags)
+    async fn get_tagged_commit(&self, commit_hash: &str) -> Result<Option<TaggedCommit>>;
+    /// List all tagged commits for a database
+    async fn list_tagged_commits(&self, database_id: &Id, limit: Option<i32>) -> Result<Vec<TaggedCommit>>;
+}
+
+pub trait Store: DatabaseStore + BranchStore + SchemaStore + InstanceStore + CommitStore + WorkingCommitStore + TagStore + Send + Sync {}

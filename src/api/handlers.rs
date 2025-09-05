@@ -7532,6 +7532,23 @@ async fn batch_query_instance_configuration_impl<S: Store>(
 
     let batch_start = Instant::now();
 
+    // Get the branch to fetch current commit hash
+    let branch = match store.get_branch(&database_id, &branch_name).await {
+        Ok(Some(branch)) => branch,
+        Ok(None) => {
+            return Err((
+                StatusCode::NOT_FOUND,
+                Json(ErrorResponse::new("Branch not found")),
+            ));
+        }
+        Err(e) => {
+            return Err((
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(ErrorResponse::new(&e.to_string())),
+            ));
+        }
+    };
+
     // Verify instance exists and belongs to the branch
     match store
         .get_instance(&database_id, &branch_name, &instance_id)
@@ -7555,50 +7572,89 @@ async fn batch_query_instance_configuration_impl<S: Store>(
     }
 
     // Build ResolutionContext from path parameters and request
+    // Use branch's current commit hash if not explicitly provided in request
+    let commit_hash = request.commit_hash.clone()
+        .or_else(|| {
+            if branch.current_commit_hash.is_empty() {
+                None
+            } else {
+                Some(branch.current_commit_hash.clone())
+            }
+        });
+    
     let resolution_context = ResolutionContext {
         database_id: database_id.clone(),
         branch_id: branch_name.clone(),
-        commit_hash: request.commit_hash.clone(),
+        commit_hash,
         policies: request.policies.clone(),
         metadata: request.context_metadata.clone(),
     };
 
-    // Process each objective set
+    // OPTIMIZED: Process all objective sets in a single batch call
+    let solve_request = NewConfigurationArtifact {
+        resolution_context: resolution_context.clone(),
+        user_metadata: request.user_metadata.clone(),
+    };
+
+    // Convert objective sets to batch format
+    let objective_sets: Vec<(String, HashMap<String, f64>)> = request.objectives
+        .iter()
+        .map(|obj_set| (obj_set.id.clone(), obj_set.objectives.clone()))
+        .collect();
+
+    // Create solve pipeline and execute with batch optimization
+    let pipeline = SolvePipeline::new(store);
+    
+    let batch_results = pipeline
+        .solve_instance_batch_optimized(
+            solve_request,
+            instance_id.clone(),
+            objective_sets,
+            request.derived_properties.clone(),
+            request.include_metadata
+        )
+        .await;
+
+    // Process batch results
     let mut configurations = Vec::new();
     let mut successful_solutions = 0;
     let mut failed_solutions = 0;
-    
-    for objective_set in &request.objectives {
-        // Create NewConfigurationArtifact for the solve pipeline
-        let solve_request = NewConfigurationArtifact {
-            resolution_context: resolution_context.clone(),
-            user_metadata: request.user_metadata.clone(),
-        };
 
-        // Create solve pipeline and execute with objectives
-        let pipeline = SolvePipeline::new(store);
-        
-        match pipeline
-            .solve_instance_with_full_options(
-                solve_request, 
-                instance_id.clone(), 
-                objective_set.objectives.clone(),
-                request.derived_properties.clone(),
-                request.include_metadata
-            )
-            .await
-        {
-            Ok(artifact) => {
-                configurations.push(ConfigurationResult {
-                    objective_id: objective_set.id.clone(),
-                    artifact,
-                    success: true,
-                    error: None,
-                });
-                successful_solutions += 1;
+    match batch_results {
+        Ok(results) => {
+            for (objective_id, result) in results {
+                match result {
+                    Ok(artifact) => {
+                        configurations.push(ConfigurationResult {
+                            objective_id,
+                            artifact,
+                            success: true,
+                            error: None,
+                        });
+                        successful_solutions += 1;
+                    }
+                    Err(e) => {
+                        // Create a minimal failed artifact to maintain response structure consistency
+                        let failed_artifact = ConfigurationArtifact::new(
+                            generate_id(),
+                            resolution_context.clone(),
+                            request.user_metadata.clone(),
+                        );
+                        
+                        configurations.push(ConfigurationResult {
+                            objective_id,
+                            artifact: failed_artifact,
+                            success: false,
+                            error: Some(format!("Solve failed: {}", e)),
+                        });
+                        failed_solutions += 1;
+                    }
+                }
             }
-            Err(e) => {
-                // Create a minimal failed artifact to maintain response structure consistency
+        }
+        Err(e) => {
+            // Handle batch failure - create failed results for all objectives
+            for objective_set in &request.objectives {
                 let failed_artifact = ConfigurationArtifact::new(
                     generate_id(),
                     resolution_context.clone(),
@@ -7609,7 +7665,7 @@ async fn batch_query_instance_configuration_impl<S: Store>(
                     objective_id: objective_set.id.clone(),
                     artifact: failed_artifact,
                     success: false,
-                    error: Some(format!("Solve failed: {}", e)),
+                    error: Some(format!("Batch solve failed: {}", e)),
                 });
                 failed_solutions += 1;
             }
@@ -7624,6 +7680,7 @@ async fn batch_query_instance_configuration_impl<S: Store>(
         queried_instance_id: instance_id,
         database_id,
         branch_id: branch_name,
+        commit_hash: resolution_context.commit_hash.clone(),
     };
 
     let response = BatchQueryResponse {
@@ -7681,51 +7738,107 @@ pub async fn batch_query_working_commit_instance_configuration<S: Store + Workin
         ));
     }
 
+    // Get the branch to fetch current commit hash
+    let branch = match store.get_branch(&db_id, &branch_name).await {
+        Ok(Some(branch)) => branch,
+        Ok(None) => {
+            return Err((
+                StatusCode::NOT_FOUND,
+                Json(ErrorResponse::new("Branch not found")),
+            ));
+        }
+        Err(e) => {
+            return Err((
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(ErrorResponse::new(&e.to_string())),
+            ));
+        }
+    };
+
     // Build ResolutionContext for working commit
+    // Use branch's current commit hash if not explicitly provided in request
+    let commit_hash = request.commit_hash.clone()
+        .or_else(|| {
+            if branch.current_commit_hash.is_empty() {
+                None
+            } else {
+                Some(branch.current_commit_hash.clone())
+            }
+        });
+    
     let resolution_context = ResolutionContext {
         database_id: db_id.clone(),
         branch_id: branch_name.clone(),
-        commit_hash: request.commit_hash.clone(),
+        commit_hash,
         policies: request.policies.clone(),
         metadata: request.context_metadata.clone(),
     };
 
-    // Process each objective set
+    // OPTIMIZED: Process all objective sets in a single batch call
+    let solve_request = NewConfigurationArtifact {
+        resolution_context: resolution_context.clone(),
+        user_metadata: request.user_metadata.clone(),
+    };
+
+    // Convert objective sets to batch format
+    let objective_sets: Vec<(String, HashMap<String, f64>)> = request.objectives
+        .iter()
+        .map(|obj_set| (obj_set.id.clone(), obj_set.objectives.clone()))
+        .collect();
+
+    // Create solve pipeline and execute with batch optimization
+    let pipeline = SolvePipeline::new(&*store);
+    
+    let batch_results = pipeline
+        .solve_instance_batch_optimized(
+            solve_request,
+            instance_id.clone(),
+            objective_sets,
+            request.derived_properties.clone(),
+            request.include_metadata
+        )
+        .await;
+
+    // Process batch results
     let mut configurations = Vec::new();
     let mut successful_solutions = 0;
     let mut failed_solutions = 0;
-    
-    for objective_set in &request.objectives {
-        // Create NewConfigurationArtifact for the solve pipeline
-        let solve_request = NewConfigurationArtifact {
-            resolution_context: resolution_context.clone(),
-            user_metadata: request.user_metadata.clone(),
-        };
 
-        // Create solve pipeline and execute with objectives
-        let pipeline = SolvePipeline::new(&*store);
-        
-        match pipeline
-            .solve_instance_with_full_options(
-                solve_request, 
-                instance_id.clone(), 
-                objective_set.objectives.clone(),
-                request.derived_properties.clone(),
-                request.include_metadata
-            )
-            .await
-        {
-            Ok(artifact) => {
-                configurations.push(ConfigurationResult {
-                    objective_id: objective_set.id.clone(),
-                    artifact,
-                    success: true,
-                    error: None,
-                });
-                successful_solutions += 1;
+    match batch_results {
+        Ok(results) => {
+            for (objective_id, result) in results {
+                match result {
+                    Ok(artifact) => {
+                        configurations.push(ConfigurationResult {
+                            objective_id,
+                            artifact,
+                            success: true,
+                            error: None,
+                        });
+                        successful_solutions += 1;
+                    }
+                    Err(e) => {
+                        // Create a minimal failed artifact to maintain response structure consistency
+                        let failed_artifact = ConfigurationArtifact::new(
+                            generate_id(),
+                            resolution_context.clone(),
+                            request.user_metadata.clone(),
+                        );
+                        
+                        configurations.push(ConfigurationResult {
+                            objective_id,
+                            artifact: failed_artifact,
+                            success: false,
+                            error: Some(format!("Solve failed: {}", e)),
+                        });
+                        failed_solutions += 1;
+                    }
+                }
             }
-            Err(e) => {
-                // Create a minimal failed artifact to maintain response structure consistency
+        }
+        Err(e) => {
+            // Handle batch failure - create failed results for all objectives
+            for objective_set in &request.objectives {
                 let failed_artifact = ConfigurationArtifact::new(
                     generate_id(),
                     resolution_context.clone(),
@@ -7736,7 +7849,7 @@ pub async fn batch_query_working_commit_instance_configuration<S: Store + Workin
                     objective_id: objective_set.id.clone(),
                     artifact: failed_artifact,
                     success: false,
-                    error: Some(format!("Solve failed: {}", e)),
+                    error: Some(format!("Batch solve failed: {}", e)),
                 });
                 failed_solutions += 1;
             }
@@ -7751,6 +7864,7 @@ pub async fn batch_query_working_commit_instance_configuration<S: Store + Workin
         queried_instance_id: instance_id,
         database_id: db_id,
         branch_id: branch_name,
+        commit_hash: resolution_context.commit_hash.clone(),
     };
 
     let response = BatchQueryResponse {
@@ -7830,42 +7944,71 @@ pub async fn batch_query_commit_instance_configuration<S: Store + CommitStore>(
         metadata: request.context_metadata.clone(),
     };
 
-    // Process each objective set
+    // OPTIMIZED: Process all objective sets in a single batch call
+    let solve_request = NewConfigurationArtifact {
+        resolution_context: resolution_context.clone(),
+        user_metadata: request.user_metadata.clone(),
+    };
+
+    // Convert objective sets to batch format
+    let objective_sets: Vec<(String, HashMap<String, f64>)> = request.objectives
+        .iter()
+        .map(|obj_set| (obj_set.id.clone(), obj_set.objectives.clone()))
+        .collect();
+
+    // Create solve pipeline and execute with batch optimization
+    let pipeline = SolvePipeline::new(&*store);
+    
+    let batch_results = pipeline
+        .solve_instance_batch_optimized(
+            solve_request,
+            instance_id.clone(),
+            objective_sets,
+            request.derived_properties.clone(),
+            request.include_metadata
+        )
+        .await;
+
+    // Process batch results
     let mut configurations = Vec::new();
     let mut successful_solutions = 0;
     let mut failed_solutions = 0;
-    
-    for objective_set in &request.objectives {
-        // Create NewConfigurationArtifact for the solve pipeline
-        let solve_request = NewConfigurationArtifact {
-            resolution_context: resolution_context.clone(),
-            user_metadata: request.user_metadata.clone(),
-        };
 
-        // Create solve pipeline and execute with objectives
-        let pipeline = SolvePipeline::new(&*store);
-        
-        match pipeline
-            .solve_instance_with_full_options(
-                solve_request, 
-                instance_id.clone(), 
-                objective_set.objectives.clone(),
-                request.derived_properties.clone(),
-                request.include_metadata
-            )
-            .await
-        {
-            Ok(artifact) => {
-                configurations.push(ConfigurationResult {
-                    objective_id: objective_set.id.clone(),
-                    artifact,
-                    success: true,
-                    error: None,
-                });
-                successful_solutions += 1;
+    match batch_results {
+        Ok(results) => {
+            for (objective_id, result) in results {
+                match result {
+                    Ok(artifact) => {
+                        configurations.push(ConfigurationResult {
+                            objective_id,
+                            artifact,
+                            success: true,
+                            error: None,
+                        });
+                        successful_solutions += 1;
+                    }
+                    Err(e) => {
+                        // Create a minimal failed artifact to maintain response structure consistency
+                        let failed_artifact = ConfigurationArtifact::new(
+                            generate_id(),
+                            resolution_context.clone(),
+                            request.user_metadata.clone(),
+                        );
+                        
+                        configurations.push(ConfigurationResult {
+                            objective_id,
+                            artifact: failed_artifact,
+                            success: false,
+                            error: Some(format!("Solve failed: {}", e)),
+                        });
+                        failed_solutions += 1;
+                    }
+                }
             }
-            Err(e) => {
-                // Create a minimal failed artifact to maintain response structure consistency
+        }
+        Err(e) => {
+            // Handle batch failure - create failed results for all objectives
+            for objective_set in &request.objectives {
                 let failed_artifact = ConfigurationArtifact::new(
                     generate_id(),
                     resolution_context.clone(),
@@ -7876,7 +8019,7 @@ pub async fn batch_query_commit_instance_configuration<S: Store + CommitStore>(
                     objective_id: objective_set.id.clone(),
                     artifact: failed_artifact,
                     success: false,
-                    error: Some(format!("Solve failed: {}", e)),
+                    error: Some(format!("Batch solve failed: {}", e)),
                 });
                 failed_solutions += 1;
             }
@@ -7891,6 +8034,7 @@ pub async fn batch_query_commit_instance_configuration<S: Store + CommitStore>(
         queried_instance_id: instance_id,
         database_id: db_id,
         branch_id: format!("commit:{}", commit_hash),
+        commit_hash: resolution_context.commit_hash.clone(),
     };
 
     let response = BatchQueryResponse {

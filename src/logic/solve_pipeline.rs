@@ -1,6 +1,6 @@
 use crate::logic::{Expander, SimpleEvaluator, SimpleValidator};
 use crate::model::{
-    ConfigurationArtifact, Domain, Id, Instance, IssueSeverity, NewConfigurationArtifact,
+    generate_configuration_id, generate_id, ConfigurationArtifact, Domain, Id, Instance, IssueSeverity, NewConfigurationArtifact,
     PipelinePhase, Quantifier, ResolutionContext, SolveIssue, SolveMetadata, SolveStatistics,
 };
 use crate::store::traits::Store;
@@ -119,6 +119,66 @@ impl<'a, S: Store> SolvePipeline<'a, S> {
             None, // no derived properties
             include_metadata
         ).await
+    }
+
+    /// BATCH-OPTIMIZED: Execute solve pipeline once with multiple objective sets
+    /// This is much more efficient than calling solve_instance_with_full_options multiple times
+    /// since collect/prepare phases only run once, and solver handles multiple objectives
+    pub async fn solve_instance_batch_optimized(
+        &self,
+        request: NewConfigurationArtifact,
+        target_instance_id: Id,
+        objective_sets: Vec<(String, HashMap<String, f64>)>, // (objective_id, objectives)
+        derived_properties: Option<Vec<String>>,
+        include_metadata: bool,
+    ) -> Result<Vec<(String, Result<ConfigurationArtifact>)>> {
+        let total_start = if include_metadata { Some(Instant::now()) } else { None };
+        let mut state = SolveState {
+            configuration: Vec::new(),
+            queried_instance_id: Some(target_instance_id.clone()),
+            pipeline_phases: if include_metadata { Vec::new() } else { Vec::new() },
+            issues: Vec::new(),
+        };
+
+        // Fetch schema once at the beginning to avoid multiple fetches
+        let schema = match self.store.get_schema(&request.resolution_context.database_id, &request.resolution_context.branch_id).await? {
+            Some(schema) => schema,
+            None => {
+                return Err(anyhow::anyhow!("No schema found for branch {}", request.resolution_context.branch_id));
+            }
+        };
+
+        // Phase 1: Collect - Get the queried instance and find all connected instances (ONCE)
+        self.phase_collect(&request.resolution_context, &mut state, &target_instance_id, &schema, include_metadata)
+            .await?;
+
+        // Phase 2: Prepare - Prepare instances for ILP solving (ONCE)
+        self.phase_prepare(&request.resolution_context, &mut state, &schema, include_metadata)
+            .await?;
+
+        // Phase 3: Solve with multiple objective sets (EFFICIENT)
+        let total_time_ms = total_start.map(|s| s.elapsed().as_millis() as u64).unwrap_or(0);
+        let artifacts = self
+            .phase_solve_ilp_batch(&request, state, total_time_ms, objective_sets, &schema, include_metadata)
+            .await?;
+
+        // Phase 4: Apply derived properties to each artifact if requested
+        let mut results = Vec::new();
+        for (objective_id, mut artifact) in artifacts {
+            if let Some(ref derived_props) = derived_properties {
+                if let Err(e) = self.phase_calculate_derived_properties(
+                    &request.resolution_context,
+                    &mut artifact,
+                    derived_props,
+                ).await {
+                    results.push((objective_id, Err(e)));
+                    continue;
+                }
+            }
+            results.push((objective_id, Ok(artifact)));
+        }
+
+        Ok(results)
     }
 
     /// Execute the solve pipeline with full options including metadata control
@@ -782,6 +842,257 @@ impl<'a, S: Store> SolvePipeline<'a, S> {
         }
 
         Ok(artifact)
+    }
+
+    /// Phase 3 BATCH: Solve using ILP solver with multiple objective sets in one call
+    /// This is much more efficient than calling phase_solve_ilp multiple times
+    async fn phase_solve_ilp_batch(
+        &self,
+        request: &NewConfigurationArtifact,
+        mut state: SolveState,
+        total_time_ms: u64,
+        objective_sets: Vec<(String, HashMap<String, f64>)>, // (objective_id, objectives)
+        schema: &crate::model::Schema,
+        include_metadata: bool,
+    ) -> Result<Vec<(String, ConfigurationArtifact)>> {
+        let phase_start = if include_metadata { Some(Instant::now()) } else { None };
+
+        // Create base artifact for all objectives
+        let mut artifact = ConfigurationArtifact {
+            id: generate_id(),
+            created_at: chrono::Utc::now(),
+            resolution_context: request.resolution_context.clone(),
+            configuration: state.configuration.clone(),
+            solve_metadata: SolveMetadata {
+                total_time_ms,
+                pipeline_phases: Vec::new(),
+                solver_info: None,
+                statistics: SolveStatistics {
+                    total_instances: 0,
+                    variable_instances_resolved: 0,
+                    conditional_properties_evaluated: 0,
+                    derived_properties_calculated: 0,
+                    ilp_variables: None,
+                    ilp_constraints: None,
+                    peak_memory_bytes: None,
+                },
+                issues: Vec::new(),
+            },
+            user_metadata: None,
+            derived_properties: HashMap::new(),
+        };
+
+        // Setup ILP model (same as single solve)
+        let mut model = Pldag::new();
+        let mut instance_ids = HashSet::new();
+        let mut id_map: HashMap<String, String> = HashMap::new();
+        let mut primitive_instance_ids: HashSet<String> = HashSet::new();
+
+        // Build constraints for all instances (same as single solve)
+        for instance in &state.configuration {
+            if let Some(class_def) = schema.get_class_by_id(&instance.class_id) {
+                // Mark instances that are primitive/directly used
+                primitive_instance_ids.insert(instance.id.clone());
+
+                if class_def.relationships.is_empty() {
+                    // This is a primitive instance, add it directly
+                    if let Some(domain) = &instance.domain {
+                        model.set_primitive(
+                            &instance.id,
+                            (domain.lower as i64, domain.upper as i64),
+                        );
+                        primitive_instance_ids.insert(instance.id.clone());
+                    }
+                    // Don't add to instance_ids since primitives are handled differently
+                } else {
+                    // Process relationships for constraint building
+                    let mut relationship_ids = Vec::new();
+
+                    for (rel_name, selection) in &instance.relationships {
+                        // Find the relationship definition in the class
+                        if let Some(rel_def) = class_def.relationships.iter().find(|r| &r.name == rel_name) {
+                            if let crate::model::RelationshipSelection::SimpleIds(materialized_ids) = selection {
+                                if !materialized_ids.is_empty() {
+                                    let materialized_strs: Vec<&str> = materialized_ids.iter().map(|s| s.as_str()).collect();
+                                    match rel_def.quantifier {
+                                        Quantifier::AtLeast(n) => {
+                                            let subid = model.set_atleast(materialized_strs, n as i64);
+                                            relationship_ids.push(subid.clone());
+                                            id_map.insert(subid, instance.id.clone());
+                                        }
+                                        Quantifier::AtMost(n) => {
+                                            let subid = model.set_atmost(materialized_strs, n as i64);
+                                            relationship_ids.push(subid.clone());
+                                            id_map.insert(subid, instance.id.clone());
+                                        }
+                                        Quantifier::Range(min, max) => {
+                                            let ids_clone: Vec<&str> = materialized_strs.iter().cloned().collect();
+                                            let lb_id = model.set_atleast(ids_clone, min as i64);
+                                            let ub_id = model.set_atmost(materialized_strs, max as i64);
+                                            let subid = model.set_and(vec![lb_id, ub_id]);
+                                            relationship_ids.push(subid.clone());
+                                            id_map.insert(subid, instance.id.clone());
+                                        }
+                                        Quantifier::Optional => {
+                                            let subid = model.set_atmost(materialized_strs, 1);
+                                            relationship_ids.push(subid.clone());
+                                            id_map.insert(subid, instance.id.clone());
+                                        }
+                                        Quantifier::Exactly(n) => {
+                                            let subid = model.set_equal(materialized_strs, n as i64);
+                                            relationship_ids.push(subid.clone());
+                                            id_map.insert(subid, instance.id.clone());
+                                        }
+                                        Quantifier::Any => {
+                                            let subid = model.set_or(materialized_strs);
+                                            relationship_ids.push(subid.clone());
+                                            id_map.insert(subid, instance.id.clone());
+                                        }
+                                        Quantifier::All => {
+                                            let subid = model.set_and(materialized_strs);
+                                            relationship_ids.push(subid.clone());
+                                            id_map.insert(subid, instance.id.clone());
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+
+                    // Combine all relationship constraints with AND
+                    if !relationship_ids.is_empty() {
+                        let instance_id = model.set_and(relationship_ids);
+                        instance_ids.insert(instance_id);
+                    }
+                }
+            }
+        }
+
+        // Create root constraint
+        let constraint_count = instance_ids.len() + 1;
+        let root = model.set_and(instance_ids.into_iter().collect());
+        let root_id = state.queried_instance_id.as_ref().map(|id| id.clone()).unwrap_or_else(|| "root".to_string());
+        id_map.insert(root.clone(), root_id);
+
+        // CRITICAL: Create multiple solver objectives - one per objective set
+        let mut all_objective_strings = Vec::new();
+        let mut solver_objectives = Vec::new();
+        
+        for (_objective_id, objectives) in &objective_sets {
+            let objective_strings: Vec<(String, f64)> = if objectives.is_empty() {
+                vec![]
+            } else {
+                // Convert instance ID objectives to pldag variable objectives
+                objectives.iter()
+                    .filter_map(|(instance_id, weight)| {
+                        // Check if this instance ID was directly used as a primitive variable
+                        if primitive_instance_ids.contains(instance_id) {
+                            Some((instance_id.clone(), *weight))
+                        } else {
+                            // Check if any id_map entry points to this instance
+                            id_map.iter()
+                                .find(|(_, mapped_instance_id)| **mapped_instance_id == *instance_id)
+                                .map(|(pldag_id, _)| (pldag_id.clone(), *weight))
+                        }
+                    })
+                    .collect()
+            };
+            
+            all_objective_strings.push(objective_strings);
+        }
+
+        // Create solver objectives with proper lifetimes
+        for objective_strings in &all_objective_strings {
+            if objective_strings.is_empty() {
+                solver_objectives.push(HashMap::new());
+            } else {
+                let obj_map: HashMap<&str, f64> = objective_strings
+                    .iter()
+                    .map(|(id, weight)| (id.as_str(), *weight))
+                    .collect();
+                solver_objectives.push(obj_map);
+            }
+        }
+
+        // CRITICAL: Call solver once with multiple objectives
+        let solutions = model.solve(
+            solver_objectives,
+            HashMap::from_iter(vec![(&root[..], (1, 1))]),
+            true,
+        );
+
+        // Create artifacts for each objective result
+        let mut results = Vec::new();
+        for (i, (objective_id, objectives)) in objective_sets.iter().enumerate() {
+            let mut obj_artifact = artifact.clone();
+            // Generate deterministic ID based on commit hash + objective content + instance
+            obj_artifact.id = generate_configuration_id(
+                request.resolution_context.commit_hash.as_ref(),
+                objectives,  // Pass the actual objectives HashMap for this objective set
+                &state.queried_instance_id.as_ref().unwrap_or(&"unknown".to_string())
+            );
+
+            // Handle solution for this objective
+            if solutions.len() > i {
+                if let Some(Some(solution_option)) = solutions.get(i) {
+                    let solution_values: HashMap<String, i64> = solution_option
+                        .iter()
+                        .map(|(k, (lower, _upper))| (k.clone(), *lower))
+                        .collect();
+                    
+                    // Map solution to this artifact
+                    if let Err(e) = self.map_solution_to_artifact_domains(&solution_values, &mut obj_artifact, &id_map).await {
+                        // If mapping fails, add error but continue with other objectives
+                        obj_artifact.solve_metadata.issues.push(SolveIssue {
+                            severity: IssueSeverity::Error,
+                            message: format!("Failed to map solution for objective {}: {}", objective_id, e),
+                            component: None,
+                            context: None,
+                        });
+                    }
+                } else {
+                    // No valid solution for this objective
+                    obj_artifact.solve_metadata.issues.push(SolveIssue {
+                        severity: IssueSeverity::Warning,
+                        message: format!("No valid solution found for objective: {}", objective_id),
+                        component: None,
+                        context: None,
+                    });
+                }
+            } else {
+                // No solution available for this objective
+                obj_artifact.solve_metadata.issues.push(SolveIssue {
+                    severity: IssueSeverity::Warning,
+                    message: format!("No solution returned for objective: {}", objective_id),
+                    component: None,
+                    context: None,
+                });
+            }
+
+            results.push((objective_id.clone(), obj_artifact));
+        }
+
+        // Add timing metadata if requested
+        if include_metadata {
+            if let Some(start) = phase_start {
+                let duration_ms = start.elapsed().as_millis() as u64;
+                for (_, artifact) in &mut results {
+                    artifact.solve_metadata.pipeline_phases.extend_from_slice(&state.pipeline_phases);
+                    artifact.solve_metadata.pipeline_phases.push(PipelinePhase {
+                        name: "solve_batch".to_string(),
+                        duration_ms,
+                        details: Some(serde_json::json!({
+                            "objectives_processed": objective_sets.len(),
+                            "ilp_constraints_total": constraint_count,
+                            "solutions_found": solutions.len(),
+                            "solver": "pldag"
+                        })),
+                    });
+                }
+            }
+        }
+
+        Ok(results)
     }
 
     /// Collect all instances connected to the target instance (find children/dependencies)

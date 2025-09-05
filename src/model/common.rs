@@ -1,4 +1,5 @@
 use serde::{Deserialize, Serialize};
+use std::collections::HashMap;
 use uuid::Uuid;
 
 pub type Id = String;
@@ -80,4 +81,45 @@ impl Domain {
 
 pub fn generate_id() -> Id {
     Uuid::new_v4().to_string()
+}
+
+/// Generate a deterministic configuration artifact ID based on commit hash and objective content
+pub fn generate_configuration_id(
+    commit_hash: Option<&String>, 
+    objectives: &HashMap<String, f64>, 
+    instance_id: &str
+) -> Id {
+    use std::collections::BTreeMap;
+    use std::hash::{Hash, Hasher};
+    
+    // Create a deterministic string representation of objectives
+    // Using BTreeMap to ensure consistent ordering
+    let mut sorted_objectives = BTreeMap::new();
+    for (k, v) in objectives {
+        sorted_objectives.insert(k.clone(), v.to_bits()); // Use to_bits for exact f64 representation
+    }
+    
+    // Create a string to hash
+    let hash_input = format!(
+        "{}-{}-{:?}", 
+        commit_hash.as_ref().map(|h| h.as_str()).unwrap_or("no-commit"),
+        instance_id,
+        sorted_objectives
+    );
+    
+    // Use std::hash::DefaultHasher for deterministic hashing
+    let mut hasher = std::collections::hash_map::DefaultHasher::new();
+    hash_input.hash(&mut hasher);
+    let hash_value = hasher.finish();
+    
+    // Format as config-{first 8 chars of commit}-{first 8 chars of objectives hash}
+    match commit_hash {
+        Some(commit) => {
+            let commit_prefix = if commit.len() >= 8 { &commit[..8] } else { commit };
+            format!("config-{}-{:016x}", commit_prefix, hash_value)
+        }
+        None => {
+            format!("config-uncommitted-{:016x}", hash_value)
+        }
+    }
 }

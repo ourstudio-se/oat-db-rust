@@ -1,0 +1,53 @@
+services:
+  # Test PostgreSQL database - isolated from dev environment
+  postgres-test:
+    image: postgres:15
+    container_name: oatdb_postgres_test
+    environment:
+      POSTGRES_DB: oatdb_test
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: password
+    ports:
+      - "5433:5432"  # Different port to avoid conflicts
+    volumes:
+      - ./init-db.sql:/docker-entrypoint-initdb.d/init-db.sql:ro
+    restart: "no"  # Don't restart for tests
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres -d oatdb_test"]
+      interval: 2s
+      timeout: 5s
+      retries: 10
+      start_period: 5s
+
+  # OAT DB Rust service for testing
+  oat-db-rust-test:
+    build: 
+      context: .
+      dockerfile: Dockerfile
+    container_name: oatdb_service_test
+    environment:
+      # Database configuration - pointing to test database
+      OAT_DATABASE_TYPE: postgres
+      DATABASE_URL: postgres://postgres:password@postgres-test:5432/oatdb_test
+      # Server configuration  
+      OAT_SERVER_HOST: 0.0.0.0
+      OAT_SERVER_PORT: 3001
+      # Rust specific
+      RUST_LOG: info
+      # Test environment flag
+      ENVIRONMENT: test
+    ports:
+      - "3002:3001"  # Different port to avoid conflicts with dev
+    depends_on:
+      postgres-test:
+        condition: service_healthy
+    restart: "no"  # Don't restart for tests
+    healthcheck:
+      test: ["CMD-SHELL", "curl -f http://localhost:3001/health || exit 1"]
+      interval: 2s
+      timeout: 5s
+      retries: 15
+      start_period: 10s
+    volumes:
+      # Mount logs directory for test debugging
+      - ./test-logs:/app/logs

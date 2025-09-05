@@ -864,7 +864,7 @@ curl -X PATCH .../instances/color-blue -d '{...}'        # Stage change
 curl -X POST .../working-commit/commit -d '{...}'        # Single commit
 ```
 
-**Use when**: Making complex, multi-step changes that should be grouped together
+**Use always**: This is now the only supported way to make modifications
 
 ### Integration with Git-like Operations
 

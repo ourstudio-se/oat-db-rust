@@ -10,6 +10,7 @@ pub mod resolution_context;
 pub mod rules;
 pub mod schema;
 pub mod selector;
+pub mod tags;
 pub mod user_context;
 
 pub use artifact::*;
@@ -24,4 +25,5 @@ pub use resolution_context::*;
 pub use rules::*;
 pub use schema::*;
 pub use selector::*;
+pub use tags::*;
 pub use user_context::*;

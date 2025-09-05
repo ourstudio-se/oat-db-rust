@@ -56,14 +56,16 @@ impl TestClient {
 }
 
 #[tokio::test]
-#[ignore] // This test requires manual setup: docker-compose up and API server running
 async fn test_bike_store_complete_workflow() {
-    // This integration test assumes:
-    // 1. Docker Compose is running with PostgreSQL: docker-compose up postgres
-    // 2. API server is running on port 3001: cargo run
-    // 3. Database is empty/clean for this test
+    // This integration test is designed to run with the containerized test environment
+    // Use the script: ./scripts/run-integration-test.sh
+    // Or run manually with: docker-compose -f docker-compose.integration-test.yml up
     
-    let client = TestClient::new("http://localhost:3001".to_string());
+    // Get base URL from environment variable (set by test runner script)
+    let base_url = std::env::var("TEST_API_BASE_URL")
+        .unwrap_or_else(|_| "http://localhost:3002".to_string());
+    
+    let client = TestClient::new(base_url);
     
     // Wait a bit for services to be ready
     sleep(Duration::from_secs(1)).await;
@@ -585,18 +587,20 @@ async fn test_bike_store_complete_workflow() {
 }
 
 #[tokio::test]
-#[ignore] // This test requires manual setup
 async fn test_api_connection() {
-    // Simple connectivity test
-    let client = TestClient::new("http://localhost:3001".to_string());
+    // Simple connectivity test that works with containerized environment
+    let base_url = std::env::var("TEST_API_BASE_URL")
+        .unwrap_or_else(|_| "http://localhost:3002".to_string());
+    
+    let client = TestClient::new(base_url.clone());
     
     match client.get("/health").await {
         Ok(response) => {
-            println!("API is accessible at localhost:3001, status: {}", response.status());
+            println!("API is accessible at {}, status: {}", base_url, response.status());
+            assert!(response.status().is_success());
         }
         Err(e) => {
-            println!("API not accessible at localhost:3001: {}", e);
-            println!("Make sure to run: cargo run");
+            panic!("API not accessible at {}: {}. Make sure to run: ./scripts/run-integration-test.sh", base_url, e);
         }
     }
 }

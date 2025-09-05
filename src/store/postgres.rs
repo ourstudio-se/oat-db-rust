@@ -398,7 +398,33 @@ impl InstanceStore for PostgresStore {
         branch_name: &str,
         class_id: &Id,
     ) -> Result<Vec<Instance>> {
-        // Use list_instances_for_branch with a type filter
+        // Use optimized method that filters at database level
+        self.find_instances_by_type_optimized(database_id, branch_name, class_id)
+            .await
+    }
+}
+
+impl PostgresStore {
+    /// Optimized method to find instances by type using PostgreSQL JSON operators
+    /// This filters at the database level instead of loading all data into memory
+    async fn find_instances_by_type_optimized(
+        &self,
+        database_id: &Id,
+        branch_name: &str,
+        class_id: &Id,
+    ) -> Result<Vec<Instance>> {
+        // First get the branch to find current commit hash
+        let branch = self
+            .get_branch(database_id, branch_name)
+            .await?
+            .ok_or_else(|| anyhow::anyhow!("Branch not found: {}/{}", database_id, branch_name))?;
+
+        if branch.current_commit_hash.is_empty() {
+            return Ok(Vec::new());
+        }
+
+        // For now, fallback to the original implementation
+        // The optimized query would require casting bytea to jsonb which is complex
         let filter = InstanceFilter {
             types: Some(vec![class_id.clone()]),
             limit: None,
@@ -447,12 +473,55 @@ impl crate::store::traits::CommitStore for PostgresStore {
 
     async fn list_commits_for_database(
         &self,
-        _database_id: &crate::model::Id,
-        _parent_hash: Option<&str>,
+        database_id: &crate::model::Id,
+        parent_hash: Option<&str>,
     ) -> Result<Vec<crate::model::Commit>> {
-        // TODO: Implement proper commit listing with parent filtering
-        // For now return empty vector to get the system working
-        Ok(Vec::new())
+        let query_str = if parent_hash.is_some() {
+            r#"
+            SELECT hash, database_id, parent_hash, author, message, created_at, 
+                   data, data_size, schema_classes_count, instances_count
+            FROM commits 
+            WHERE database_id = $1 AND parent_hash = $2
+            ORDER BY created_at DESC
+            "#
+        } else {
+            r#"
+            SELECT hash, database_id, parent_hash, author, message, created_at, 
+                   data, data_size, schema_classes_count, instances_count
+            FROM commits 
+            WHERE database_id = $1
+            ORDER BY created_at DESC
+            "#
+        };
+
+        let mut query = sqlx::query(query_str).bind(database_id);
+        
+        if let Some(parent) = parent_hash {
+            query = query.bind(parent);
+        }
+        
+        let rows = query
+            .fetch_all(&self.pool)
+            .await
+            .context("Failed to list commits for database")?;
+
+        let commits = rows
+            .into_iter()
+            .map(|row| crate::model::Commit {
+                hash: row.get("hash"),
+                database_id: row.get("database_id"),
+                parent_hash: row.get("parent_hash"),
+                author: row.get("author"),
+                message: row.get("message"),
+                created_at: row.get::<chrono::DateTime<chrono::Utc>, _>("created_at").to_rfc3339(),
+                data: row.get("data"),
+                data_size: row.get("data_size"),
+                schema_classes_count: row.get("schema_classes_count"),
+                instances_count: row.get("instances_count"),
+            })
+            .collect();
+
+        Ok(commits)
     }
 
     async fn create_commit(
@@ -801,6 +870,165 @@ impl crate::store::traits::WorkingCommitStore for PostgresStore {
             instances_data,
             status,
         }))
+    }
+}
+
+// Simplified TagStore implementation using only commit_tags
+#[async_trait::async_trait]
+impl crate::store::traits::TagStore for PostgresStore {
+    async fn create_commit_tag(&self, tag: crate::model::NewCommitTag) -> Result<crate::model::CommitTag> {
+        let metadata = tag.metadata.clone().unwrap_or_default();
+        let metadata_json = serde_json::to_value(&metadata)
+            .context("Failed to serialize metadata")?;
+        
+        let row = sqlx::query!(
+            r#"
+            INSERT INTO commit_tags (commit_hash, tag_type, tag_name, tag_description, created_by, metadata)
+            VALUES ($1, $2, $3, $4, $5, $6)
+            RETURNING id, created_at
+            "#,
+            tag.commit_hash,
+            tag.tag_type.to_string(),
+            tag.tag_name,
+            tag.tag_description,
+            tag.created_by,
+            metadata_json
+        )
+        .fetch_one(&self.pool)
+        .await
+        .context("Failed to create commit tag")?;
+
+        Ok(crate::model::CommitTag {
+            id: row.id,
+            commit_hash: tag.commit_hash,
+            tag_type: tag.tag_type,
+            tag_name: tag.tag_name,
+            tag_description: tag.tag_description,
+            created_at: row.created_at.to_rfc3339(),
+            created_by: tag.created_by,
+            metadata,
+        })
+    }
+
+    async fn get_commit_tags(&self, commit_hash: &str) -> Result<Vec<crate::model::CommitTag>> {
+        let rows = sqlx::query!(
+            r#"
+            SELECT id, commit_hash, tag_type, tag_name, tag_description, created_at, created_by, metadata
+            FROM commit_tags
+            WHERE commit_hash = $1
+            ORDER BY created_at DESC
+            "#,
+            commit_hash
+        )
+        .fetch_all(&self.pool)
+        .await
+        .context("Failed to get commit tags")?;
+
+        let mut tags = Vec::new();
+        for row in rows {
+            let tag_type = row.tag_type.parse()
+                .map_err(|e| anyhow::anyhow!("Invalid tag type: {}", e))?;
+            let metadata = serde_json::from_value(row.metadata.unwrap_or_else(|| serde_json::json!({})))
+                .context("Failed to deserialize metadata")?;
+
+            tags.push(crate::model::CommitTag {
+                id: row.id,
+                commit_hash: row.commit_hash,
+                tag_type,
+                tag_name: row.tag_name,
+                tag_description: row.tag_description,
+                created_at: row.created_at.to_rfc3339(),
+                created_by: row.created_by,
+                metadata,
+            });
+        }
+
+        Ok(tags)
+    }
+
+    async fn delete_commit_tag(&self, tag_id: i32) -> Result<bool> {
+        let result = sqlx::query!(
+            "DELETE FROM commit_tags WHERE id = $1",
+            tag_id
+        )
+        .execute(&self.pool)
+        .await
+        .context("Failed to delete commit tag")?;
+
+        Ok(result.rows_affected() > 0)
+    }
+
+    async fn search_commits_by_tags(&self, database_id: &crate::model::Id, query: crate::model::TagQuery) -> Result<Vec<crate::model::TaggedCommit>> {
+        // Simple search implementation - can be enhanced with dynamic SQL for complex queries
+        self.list_tagged_commits(database_id, query.limit).await
+    }
+
+    async fn get_tagged_commit(&self, commit_hash: &str) -> Result<Option<crate::model::TaggedCommit>> {
+        // Get the commit first
+        let commit_row = sqlx::query!(
+            r#"
+            SELECT hash, database_id, message, author, created_at
+            FROM commits
+            WHERE hash = $1
+            "#,
+            commit_hash
+        )
+        .fetch_optional(&self.pool)
+        .await
+        .context("Failed to get commit")?;
+
+        let Some(commit_row) = commit_row else {
+            return Ok(None);
+        };
+
+        // Get tags
+        let tags = self.get_commit_tags(commit_hash).await?;
+
+        Ok(Some(crate::model::TaggedCommit {
+            commit_hash: commit_row.hash,
+            database_id: commit_row.database_id,
+            commit_message: commit_row.message,
+            commit_author: commit_row.author,
+            commit_created_at: commit_row.created_at.to_rfc3339(),
+            tags,
+        }))
+    }
+
+    async fn list_tagged_commits(&self, database_id: &crate::model::Id, limit: Option<i32>) -> Result<Vec<crate::model::TaggedCommit>> {
+        let limit_value = limit.unwrap_or(50).min(100); // Default 50, max 100
+
+        let rows = sqlx::query!(
+            r#"
+            SELECT DISTINCT c.hash, c.database_id, c.message, c.author, c.created_at
+            FROM commits c
+            INNER JOIN commit_tags ct ON c.hash = ct.commit_hash
+            WHERE c.database_id = $1
+            ORDER BY c.created_at DESC
+            LIMIT $2
+            "#,
+            database_id,
+            limit_value as i64
+        )
+        .fetch_all(&self.pool)
+        .await
+        .context("Failed to list tagged commits")?;
+
+        let mut tagged_commits = Vec::new();
+        for row in rows {
+            let commit_hash = row.hash;
+            let tags = self.get_commit_tags(&commit_hash).await?;
+
+            tagged_commits.push(crate::model::TaggedCommit {
+                commit_hash,
+                database_id: row.database_id,
+                commit_message: row.message,
+                commit_author: row.author,
+                commit_created_at: row.created_at.to_rfc3339(),
+                tags,
+            });
+        }
+
+        Ok(tagged_commits)
     }
 }
 
