@@ -209,14 +209,13 @@ impl Expander {
         
         let start_time = Instant::now();
         
-        // Step 1: Resolve effective pool using PoolResolver
+        // Step 1: Get all instances and resolve effective pool
+        let instances = store.list_instances_for_branch(database_id, branch_id, None).await?;
         let effective_pool = PoolResolver::resolve_effective_pool(
-            store,
+            &instances,
             rel_def,
             None, // No instance override
-            database_id,
-            &branch_id.to_string(),
-        ).await?;
+        )?;
         
         // Step 2: For default pool resolution, show the full pool as unresolved
         // This allows the frontend/user to see all available options and make selections
@@ -487,13 +486,9 @@ impl Expander {
                 matching_instances.extend(instances);
             }
             
-            // Apply where_clause filters if present
+            // Apply where_clause filters if present using our unified filtering system
             if let Some(where_clause) = &filter.where_clause {
-                matching_instances.retain(|instance| {
-                    // Apply filters based on properties
-                    // For now, implement basic property filters
-                    Self::matches_where_clause(instance, where_clause)
-                });
+                matching_instances = crate::logic::filter_instances(matching_instances, where_clause);
             }
             
             // Apply sorting if present

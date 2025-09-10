@@ -1,0 +1,63 @@
+{
+  "examples": [
+    {
+      "description": "Filter all Furniture with price > 100",
+      "filter": {
+        "all": [
+          {"eq": ["$.__type", "Furniture"]},
+          {"gt": ["$.price", 100]}
+        ]
+      }
+    },
+    {
+      "description": "Filter instances with material in ['iron', 'bronze'] OR id in ['x', 'y']",
+      "filter": {
+        "any": [
+          {"in": ["$.material", ["iron", "bronze"]]},
+          {"in": ["$.__id", ["x", "y"]]}
+        ]
+      }
+    },
+    {
+      "description": "Complex filter with multiple conditions",
+      "filter": {
+        "all": [
+          {"eq": ["$.__type", "Furniture"]},
+          {"gt": ["$.price", 100]},
+          {"in": ["$.material", ["wood", "metal"]]},
+          {"not": {"eq": ["$.color", "red"]}}
+        ]
+      }
+    },
+    {
+      "description": "Filter using exists/not_exists",
+      "filter": {
+        "all": [
+          {"exists": "$.price"},
+          {"not_exists": "$.deprecated_field"}
+        ]
+      }
+    },
+    {
+      "description": "String contains filter",
+      "filter": {
+        "contains": ["$.description", "premium"]
+      }
+    }
+  ],
+  "usage": {
+    "api_endpoint": "POST /databases/{db_id}/instances",
+    "request_body": {
+      "filter": {
+        "where": {
+          "all": [
+            {"eq": ["$.__type", "Furniture"]},
+            {"gt": ["$.price", 100]}
+          ]
+        }
+      }
+    },
+    "rust_code": "use oat_db_rust::logic::{filter_instances, FilterExpr, JsonPath, parse_filter_expr};\nuse oat_db_rust::model::InstanceFilter;\nuse serde_json::Value;\n\n// Method 1: Direct JSON deserialization to FilterExpr (PREFERRED)\nlet filter_json = r#\"{\n    \"all\": [\n        {\"eq\": [\"$.__type\", \"Furniture\"]},\n        {\"gt\": [\"$.price\", 100]}\n    ]\n}\"#;\nlet filter: FilterExpr = serde_json::from_str(filter_json)?;\nlet filtered = filter_instances(instances, &filter);\n\n// Method 2: Parse from serde_json::Value\nlet filter_value = serde_json::json!({\n    \"all\": [\n        {\"eq\": [\"$.__type\", \"Furniture\"]},\n        {\"gt\": [\"$.price\", 100]}\n    ]\n});\nlet filter = parse_filter_expr(filter_value)?;\nlet filtered = filter_instances(instances, &filter);\n\n// Method 3: Build programmatically (type-safe)\nlet filter = FilterExpr::All {\n    all: vec![\n        FilterExpr::Eq {\n            eq: (JsonPath(\"$.__type\".to_string()), Value::String(\"Furniture\".to_string())),\n        },\n        FilterExpr::Gt {\n            gt: (JsonPath(\"$.price\".to_string()), Value::Number(serde_json::Number::from(100))),\n        },\n    ],\n};\nlet filtered = filter_instances(instances, &filter);\n\n// Method 4: Using InstanceFilter (unified API)\nlet instance_filter = InstanceFilter {\n    types: Some(vec![\"Furniture\".to_string()]),\n    where_clause: Some(FilterExpr::Gt {\n        gt: (JsonPath(\"$.price\".to_string()), Value::Number(serde_json::Number::from(100)))\n    }),\n    sort: Some(\"price\".to_string()),\n    limit: Some(10),\n};\n// Use with store.list_instances_for_branch(db_id, branch_name, Some(instance_filter))",
+    "summary": "✅ UNIFIED FILTERING SYSTEM:\n• InstanceFilter.where_clause now uses FilterExpr (strongly typed)\n• Same powerful filtering for both instance queries AND pool resolution\n• No more raw JSON - everything is type-safe\n• Supports complex nested expressions with any/all/eq/gt/in/etc\n• Used by PostgresStore, pool resolution, and all filtering operations"
+  }
+}

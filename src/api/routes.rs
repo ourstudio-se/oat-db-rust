@@ -69,6 +69,64 @@ pub fn create_router<S: Store + 'static>() -> Router<Arc<S>> {
         .route("/databases/:db_id/commits/:commit_hash/instances", get(handlers::get_commit_instances::<S>))
         .route("/databases/:db_id/commits/:commit_hash/schema/classes/:class_id", get(handlers::get_commit_class::<S>))
         .route("/databases/:db_id/commits/:commit_hash/instances/:instance_id", get(handlers::get_commit_instance::<S>))
+        // NEW: Commit-based working-commit endpoints
+        .route(
+            "/databases/:db_id/commits/:commit_hash/working-commit",
+            get(handlers::get_commit_working_commit::<S>),
+        )
+        .route(
+            "/databases/:db_id/commits/:commit_hash/working-commit/schema",
+            get(handlers::get_commit_working_commit_schema::<S>),
+        )
+        .route(
+            "/databases/:db_id/commits/:commit_hash/working-commit/schema/classes/:class_id",
+            get(handlers::get_commit_working_commit_class::<S>),
+        )
+        .route(
+            "/databases/:db_id/commits/:commit_hash/working-commit/instances",
+            get(handlers::list_commit_working_commit_instances::<S>),
+        )
+        .route(
+            "/databases/:db_id/commits/:commit_hash/working-commit/instances/:instance_id",
+            get(handlers::get_commit_working_commit_instance::<S>),
+        )
+        .route(
+            "/databases/:db_id/commits/:commit_hash/working-commit/instances/:instance_id/query",
+            post(handlers::query_commit_working_commit_instance::<S>),
+        )
+        .route(
+            "/databases/:db_id/commits/:commit_hash/working-commit/instances/:instance_id/query",
+            get(handlers::get_commit_working_commit_instance_query::<S>),
+        )
+        // DEFAULT BRANCH working-commit endpoints (assumes main branch)
+        .route(
+            "/databases/:db_id/working-commit",
+            get(handlers::get_default_branch_working_commit::<S>),
+        )
+        .route(
+            "/databases/:db_id/working-commit/schema",
+            get(handlers::get_default_branch_working_commit_schema::<S>),
+        )
+        .route(
+            "/databases/:db_id/working-commit/schema/classes/:class_id",
+            get(handlers::get_default_branch_working_commit_class::<S>),
+        )
+        .route(
+            "/databases/:db_id/working-commit/instances",
+            get(handlers::list_default_branch_working_commit_instances::<S>),
+        )
+        .route(
+            "/databases/:db_id/working-commit/instances/:instance_id",
+            get(handlers::get_default_branch_working_commit_instance::<S>),
+        )
+        .route(
+            "/databases/:db_id/working-commit/instances/:instance_id/query",
+            post(handlers::query_default_branch_working_commit_instance::<S>),
+        )
+        .route(
+            "/databases/:db_id/working-commit/instances/:instance_id/query",
+            get(handlers::get_default_branch_working_commit_instance_query::<S>),
+        )
         // Database-level queries (automatically use main branch) - DEPRECATED
         // These endpoints are DEPRECATED and will be removed in future versions.
         // Use commit-specific endpoints instead: /databases/{db}/commits/{commit}/...
@@ -223,14 +281,6 @@ pub fn create_router<S: Store + 'static>() -> Router<Arc<S>> {
             "/databases/:db_id/commits/:commit_hash/instances/:instance_id/query",
             get(handlers::get_commit_instance_query::<S>),
         )
-        // Legacy solve endpoint (deprecated - use instance-specific endpoints)
-        .route("/solve", post(handlers::solve_configuration::<S>))
-        .route("/artifacts", get(handlers::list_artifacts::<S>))
-        .route("/artifacts/:artifact_id", get(handlers::get_artifact::<S>))
-        .route(
-            "/artifacts/:artifact_id/summary",
-            get(handlers::get_artifact_summary::<S>),
-        )
         // Working Commit endpoints (staging changes before commit)
         .route(
             "/databases/:db_id/branches/:branch_id/working-commit",
@@ -252,6 +302,31 @@ pub fn create_router<S: Store + 'static>() -> Router<Arc<S>> {
             "/databases/:db_id/branches/:branch_id/working-commit/validate",
             get(handlers::validate_working_commit::<S>),
         )
+        // NEW: Working Commit READ endpoints for current state 
+        .route(
+            "/databases/:db_id/branches/:branch_id/working-commit/schema", 
+            get(handlers::get_working_commit_schema::<S>),
+        )
+        .route(
+            "/databases/:db_id/branches/:branch_id/working-commit/schema/classes/:class_id",
+            get(handlers::get_working_commit_class::<S>),
+        )
+        .route(
+            "/databases/:db_id/branches/:branch_id/working-commit/instances",
+            get(handlers::list_working_commit_instances::<S>),
+        )
+        .route(
+            "/databases/:db_id/branches/:branch_id/working-commit/instances/:instance_id",
+            get(handlers::get_working_commit_instance::<S>),
+        )
+        .route(
+            "/databases/:db_id/branches/:branch_id/working-commit/instances/:instance_id/query",
+            post(handlers::query_working_commit_instance_configuration::<S>),
+        )
+        .route(
+            "/databases/:db_id/branches/:branch_id/working-commit/instances/:instance_id/query",
+            get(handlers::get_working_commit_instance_query::<S>),
+        )
         .route(
             "/databases/:db_id/commits/:commit_hash/validate",
             get(handlers::validate_commit::<S>),
@@ -260,19 +335,18 @@ pub fn create_router<S: Store + 'static>() -> Router<Arc<S>> {
             "/databases/:db_id/branches/:branch_id/working-commit/raw",
             get(handlers::get_active_working_commit_raw::<S>),
         )
-        // Legacy Working Commit Staging Routes - DEPRECATED (kept for backward compatibility)
-        .route(
-            "/databases/:db_id/branches/:branch_id/working-commit/schema/classes/:class_id",
-            patch(handlers::stage_class_schema_update::<S>),
-        )
         // NOTE: instance staging route removed due to conflict with new working-commit endpoint
         // NEW: Working Commit Modification Endpoints (RECOMMENDED)
         .route(
-            "/databases/:db_id/branches/:branch_id/working-commit/classes/:class_id",
+            "/databases/:db_id/branches/:branch_id/working-commit/schema/classes",
+            post(handlers::create_working_commit_class::<S>),
+        )
+        .route(
+            "/databases/:db_id/branches/:branch_id/working-commit/schema/classes/:class_id",
             patch(handlers::update_working_commit_class::<S>),
         )
         .route(
-            "/databases/:db_id/branches/:branch_id/working-commit/classes/:class_id",
+            "/databases/:db_id/branches/:branch_id/working-commit/schema/classes/:class_id",
             delete(handlers::delete_working_commit_class::<S>),
         )
         .route(

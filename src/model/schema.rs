@@ -48,6 +48,20 @@ impl Schema {
         None
     }
 
+    /// Normalize the schema to ensure all PropertyDef instances have the value field
+    /// This is useful for migration from older versions that don't have the value field
+    pub fn normalize(&mut self) {
+        for class in &mut self.classes {
+            for property in &mut class.properties {
+                // Ensure the value field exists (it should already be None if missing due to serde defaults)
+                // This method is primarily for explicit normalization and future migration logic
+                if property.value.is_none() {
+                    property.value = None; // Explicitly set to None for consistency
+                }
+            }
+        }
+    }
+
     /// Find a derived definition within any class by ID
     pub fn get_derived_by_id(&self, derived_id: &Id) -> Option<(&ClassDef, &DerivedDef)> {
         for class in &self.classes {
@@ -66,6 +80,8 @@ pub struct PropertyDef {
     pub data_type: DataType,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub required: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub value: Option<serde_json::Value>, // Default/constant value for this property
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]

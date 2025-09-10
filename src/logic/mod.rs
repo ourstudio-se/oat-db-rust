@@ -7,6 +7,7 @@ pub mod branch_ops;
 pub mod expand;
 pub mod pool_resolution;
 pub mod solve_pipeline;
+pub mod instance_filter;
 
 // pub use validate::*;
 pub use validate_simple::*;
@@ -16,4 +17,5 @@ pub use evaluate_simple::*;
 pub use branch_ops::*;
 pub use expand::*;
 pub use pool_resolution::*;
-pub use solve_pipeline::*;
+pub use solve_pipeline::{SolvePipeline, SolvePipelineWithStore};
+pub use instance_filter::*;

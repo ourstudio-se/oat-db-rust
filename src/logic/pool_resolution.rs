@@ -1,9 +1,8 @@
 use anyhow::{anyhow, Result};
 use crate::model::{
-    DefaultPool, InstanceFilter, RelationshipDef, RelationshipSelection, 
+    DefaultPool, Instance, InstanceFilter, RelationshipDef, RelationshipSelection, 
     SelectionSpec, Id
 };
-use crate::store::traits::Store;
 use std::collections::HashSet;
 
 /// Pool and selection resolver for combinatorial optimization
@@ -12,12 +11,10 @@ pub struct PoolResolver;
 impl PoolResolver {
     /// Resolve the effective pool for a relationship
     /// Step 1: Determine what instances are available for selection
-    pub async fn resolve_effective_pool<S: Store>(
-        store: &S,
+    pub fn resolve_effective_pool(
+        instances: &[Instance],
         relationship_def: &RelationshipDef,
         instance_override: Option<&InstanceFilter>,
-        database_id: &Id,
-        branch_id: &Id,
     ) -> Result<Vec<Id>> {
         let pool_filter = if let Some(override_filter) = instance_override {
             // Use instance-level pool override
@@ -50,19 +47,59 @@ impl PoolResolver {
             }
         };
 
-        // Execute the filter to get pool instances
-        let pool_instances = store.list_instances_for_branch(database_id, branch_id, Some(pool_filter)).await?;
+        // Filter instances to get pool instances
+        let mut pool_instances: Vec<Instance> = instances.to_vec();
+        
+        // Apply type filter if specified
+        if let Some(types) = &pool_filter.types {
+            pool_instances.retain(|inst| types.contains(&inst.class_id));
+        }
+        
+        // Apply where clause filter if specified
+        if let Some(filter_expr) = &pool_filter.where_clause {
+            pool_instances = crate::logic::filter_instances(pool_instances, filter_expr);
+        }
+        
+        // Apply sort if specified
+        if let Some(sort_field) = &pool_filter.sort {
+            pool_instances.sort_by(|a, b| {
+                use std::cmp::Ordering;
+                let a_val = a.properties.get(sort_field).map(|pv| match pv {
+                    crate::model::PropertyValue::Literal(tv) => &tv.value,
+                    crate::model::PropertyValue::Conditional(_) => &serde_json::Value::Null,
+                });
+                let b_val = b.properties.get(sort_field).map(|pv| match pv {
+                    crate::model::PropertyValue::Literal(tv) => &tv.value,
+                    crate::model::PropertyValue::Conditional(_) => &serde_json::Value::Null,
+                });
+                match (a_val, b_val) {
+                    (Some(a), Some(b)) => {
+                        let a_str = serde_json::to_string(a).unwrap_or_default();
+                        let b_str = serde_json::to_string(b).unwrap_or_default();
+                        a_str.cmp(&b_str)
+                    },
+                    (Some(_), None) => Ordering::Greater,
+                    (None, Some(_)) => Ordering::Less,
+                    (None, None) => Ordering::Equal,
+                }
+            });
+        }
+        
+        // Apply limit if specified
+        if let Some(limit) = pool_filter.limit {
+            pool_instances.truncate(limit);
+        }
+        
         Ok(pool_instances.into_iter().map(|inst| inst.id).collect())
     }
 
     /// Resolve the final selection from the effective pool
     /// Step 2: Determine which specific instances are selected
-    pub async fn resolve_selection<S: Store>(
-        _store: &S,
+    pub fn resolve_selection(
+        instances: &[Instance],
         relationship_def: &RelationshipDef,
         effective_pool: &[Id],
         selection_spec: Option<&SelectionSpec>,
-        _branch_id: &Id,
     ) -> Result<SelectionResult> {
         let pool_set: HashSet<&Id> = effective_pool.iter().collect();
 
@@ -79,11 +116,59 @@ impl PoolResolver {
                 }
                 Ok(SelectionResult::Resolved(ids.clone()))
             }
-            Some(SelectionSpec::Filter(_filter)) => {
+            Some(SelectionSpec::Filter(filter)) => {
                 // Filter-based selection from pool
-                // For now, this is simplified - in a full implementation you'd apply the filter
-                // to the pool instances
-                Ok(SelectionResult::Resolved(effective_pool.to_vec()))
+                // Filter to only pool instances from the provided instances
+                let pool_instances: Vec<Instance> = instances.iter()
+                    .filter(|inst| effective_pool.contains(&inst.id))
+                    .cloned()
+                    .collect();
+                
+                // Apply the selection filter to the pool instances
+                let mut filtered_instances = pool_instances;
+                
+                // Apply type filter if specified
+                if let Some(types) = &filter.types {
+                    filtered_instances.retain(|inst| types.contains(&inst.class_id));
+                }
+                
+                // Apply where clause filter if specified
+                if let Some(filter_expr) = &filter.where_clause {
+                    filtered_instances = crate::logic::filter_instances(filtered_instances, filter_expr);
+                }
+                
+                // Apply sort if specified
+                if let Some(sort_field) = &filter.sort {
+                    filtered_instances.sort_by(|a, b| {
+                        use std::cmp::Ordering;
+                        let a_val = a.properties.get(sort_field).map(|pv| match pv {
+                            crate::model::PropertyValue::Literal(tv) => &tv.value,
+                            crate::model::PropertyValue::Conditional(_) => &serde_json::Value::Null,
+                        });
+                        let b_val = b.properties.get(sort_field).map(|pv| match pv {
+                            crate::model::PropertyValue::Literal(tv) => &tv.value,
+                            crate::model::PropertyValue::Conditional(_) => &serde_json::Value::Null,
+                        });
+                        match (a_val, b_val) {
+                            (Some(a), Some(b)) => {
+                                let a_str = serde_json::to_string(a).unwrap_or_default();
+                                let b_str = serde_json::to_string(b).unwrap_or_default();
+                                a_str.cmp(&b_str)
+                            },
+                            (Some(_), None) => Ordering::Greater,
+                            (None, Some(_)) => Ordering::Less,
+                            (None, None) => Ordering::Equal,
+                        }
+                    });
+                }
+                
+                // Apply limit if specified
+                if let Some(limit) = filter.limit {
+                    filtered_instances.truncate(limit);
+                }
+                
+                let filtered_ids: Vec<Id> = filtered_instances.into_iter().map(|inst| inst.id).collect();
+                Ok(SelectionResult::Resolved(filtered_ids))
             }
             Some(SelectionSpec::All) => {
                 // Select all from pool
@@ -106,31 +191,26 @@ impl PoolResolver {
     }
 
     /// Full resolution: pool + selection
-    pub async fn resolve_relationship<S: Store>(
-        store: &S,
+    pub fn resolve_relationship(
+        instances: &[Instance],
         relationship_def: &RelationshipDef,
         relationship_selection: &RelationshipSelection,
-        database_id: &Id,
-        branch_id: &Id,
     ) -> Result<SelectionResult> {
         match relationship_selection {
             RelationshipSelection::PoolBased { pool, selection } => {
                 // New pool-based resolution
                 let effective_pool = Self::resolve_effective_pool(
-                    store,
+                    instances,
                     relationship_def,
                     pool.as_ref(),
-                    database_id,
-                    branch_id,
-                ).await?;
+                )?;
 
                 Self::resolve_selection(
-                    store,
+                    instances,
                     relationship_def,
                     &effective_pool,
                     selection.as_ref(),
-                    branch_id,
-                ).await
+                )
             }
             // Legacy formats - convert to resolved selections
             RelationshipSelection::SimpleIds(ids) => {
@@ -142,18 +222,57 @@ impl PoolResolver {
             RelationshipSelection::All => {
                 // Resolve as "all from default pool"
                 let effective_pool = Self::resolve_effective_pool(
-                    store,
+                    instances,
                     relationship_def,
                     None,
-                    database_id,
-                    branch_id,
-                ).await?;
+                )?;
                 Ok(SelectionResult::Resolved(effective_pool))
             }
             RelationshipSelection::Filter { filter } => {
-                // Apply filter directly
-                let instances = store.list_instances_for_branch(database_id, branch_id, Some(filter.clone())).await?;
-                let ids = instances.into_iter().map(|inst| inst.id).collect();
+                // Apply filter directly to the provided instances
+                let mut filtered_instances: Vec<Instance> = instances.to_vec();
+                
+                // Apply type filter if specified
+                if let Some(types) = &filter.types {
+                    filtered_instances.retain(|inst| types.contains(&inst.class_id));
+                }
+                
+                // Apply where clause filter if specified
+                if let Some(filter_expr) = &filter.where_clause {
+                    filtered_instances = crate::logic::filter_instances(filtered_instances, filter_expr);
+                }
+                
+                // Apply sort if specified
+                if let Some(sort_field) = &filter.sort {
+                    filtered_instances.sort_by(|a, b| {
+                        use std::cmp::Ordering;
+                        let a_val = a.properties.get(sort_field).map(|pv| match pv {
+                            crate::model::PropertyValue::Literal(tv) => &tv.value,
+                            crate::model::PropertyValue::Conditional(_) => &serde_json::Value::Null,
+                        });
+                        let b_val = b.properties.get(sort_field).map(|pv| match pv {
+                            crate::model::PropertyValue::Literal(tv) => &tv.value,
+                            crate::model::PropertyValue::Conditional(_) => &serde_json::Value::Null,
+                        });
+                        match (a_val, b_val) {
+                            (Some(a), Some(b)) => {
+                                let a_str = serde_json::to_string(a).unwrap_or_default();
+                                let b_str = serde_json::to_string(b).unwrap_or_default();
+                                a_str.cmp(&b_str)
+                            },
+                            (Some(_), None) => Ordering::Greater,
+                            (None, Some(_)) => Ordering::Less,
+                            (None, None) => Ordering::Equal,
+                        }
+                    });
+                }
+                
+                // Apply limit if specified
+                if let Some(limit) = filter.limit {
+                    filtered_instances.truncate(limit);
+                }
+                
+                let ids = filtered_instances.into_iter().map(|inst| inst.id).collect();
                 Ok(SelectionResult::Resolved(ids))
             }
         }

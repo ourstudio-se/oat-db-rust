@@ -5,19 +5,19 @@ use uuid::Uuid;
 pub type Id = String;
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-#[serde(rename_all = "PascalCase")]
+#[serde(rename_all = "kebab-case")]
 pub enum DataType {
     String,
     Number,
     Boolean,
     Object,
     Array,
-    #[serde(rename = "StringList")] // Keep for backward compatibility
+    #[serde(rename = "string-list")]
     StringList,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-#[serde(rename_all = "SCREAMING_SNAKE_CASE")]
+#[serde(rename_all = "kebab-case")]
 pub enum Quantifier {
     Exactly(usize),
     AtLeast(usize),
@@ -36,7 +36,7 @@ pub enum SelectionType {
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-#[serde(rename_all = "lowercase")]
+#[serde(rename_all = "kebab-case")]
 pub enum ComparisonOp {
     Eq,
     Ne,

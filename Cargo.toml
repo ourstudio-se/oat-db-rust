@@ -32,5 +32,9 @@ sha2 = "0.10"  # SHA-256 hashing for commits
 hex = "0.4"   # Hex encoding for hashes
 flate2 = "1.0"  # Gzip compression for commit data
 
+[[bin]]
+name = "migrate-enum-formats"
+path = "src/scripts/migrate_enum_formats.rs"
+
 [dev-dependencies]
 reqwest = { version = "0.11", features = ["json"] }

@@ -115,7 +115,7 @@ async fn test_bike_store_complete_workflow() {
             {
                 "id": "price",
                 "name": "price",
-                "data_type": "Number",
+                "data_type": "number",
                 "required": true
             }
         ],
@@ -143,7 +143,7 @@ async fn test_bike_store_complete_workflow() {
             {
                 "id": "price",
                 "name": "price",
-                "data_type": "Number",
+                "data_type": "number",
                 "required": true
             }
         ],
@@ -166,7 +166,7 @@ async fn test_bike_store_complete_workflow() {
             {
                 "id": "price",
                 "name": "price",
-                "data_type": "Number",
+                "data_type": "number",
                 "required": true
             }
         ],
@@ -175,7 +175,7 @@ async fn test_bike_store_complete_workflow() {
                 "id": "color",
                 "name": "color",
                 "targets": ["Color"],
-                "quantifier": {"EXACTLY": 1},
+                "quantifier": {"exactly": 1},
                 "selection": "explicit-or-filter",
                 "default_pool": {"mode": "all"}
             },
@@ -183,7 +183,7 @@ async fn test_bike_store_complete_workflow() {
                 "id": "wheels",
                 "name": "wheels",
                 "targets": ["Wheels"],
-                "quantifier": {"EXACTLY": 1},
+                "quantifier": {"exactly": 1},
                 "selection": "explicit-or-filter",
                 "default_pool": {"mode": "all"}
             }
@@ -207,7 +207,7 @@ async fn test_bike_store_complete_workflow() {
         "properties": {
             "price": {
                 "value": 100,
-                "type": "Number"
+                "type": "number"
             }
         },
         "relationships": {}
@@ -231,7 +231,7 @@ async fn test_bike_store_complete_workflow() {
         "properties": {
             "price": {
                 "value": 150,
-                "type": "Number"
+                "type": "number"
             }
         },
         "relationships": {}
@@ -253,7 +253,7 @@ async fn test_bike_store_complete_workflow() {
         "properties": {
             "price": {
                 "value": 200,
-                "type": "Number"
+                "type": "number"
             }
         },
         "relationships": {}
@@ -272,7 +272,7 @@ async fn test_bike_store_complete_workflow() {
         "properties": {
             "price": {
                 "value": 400,
-                "type": "Number"
+                "type": "number"
             }
         },
         "relationships": {}
@@ -292,7 +292,7 @@ async fn test_bike_store_complete_workflow() {
         "properties": {
             "price": {
                 "value": 500,
-                "type": "Number"
+                "type": "number"
             }
         },
         "relationships": {
@@ -385,7 +385,7 @@ async fn test_bike_store_complete_workflow() {
         "properties": {
             "price": {
                 "value": 130,
-                "type": "Number"
+                "type": "number"
             }
         },
         "relationships": {}

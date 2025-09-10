@@ -36,9 +36,9 @@ pub struct ClassDef {
     pub description: Option<String>,
 
     /// Domain constraint for instances of this class (defines allowed lower/upper bounds)
-    /// If None, instances have no domain constraints
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub domain_constraint: Option<Domain>,
+    /// Every class must have a domain since all decision variables need a domain
+    #[serde(default = "Domain::binary")]
+    pub domain_constraint: Domain,
 
     /// Audit fields for tracking who created/modified this class
     #[serde(default = "default_user")]
@@ -75,9 +75,9 @@ pub struct NewClassDef {
     pub description: Option<String>,
 
     /// Domain constraint for instances of this class (defines allowed lower/upper bounds)
-    /// If None, instances have no domain constraints
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub domain_constraint: Option<Domain>,
+    /// Every class must have a domain since all decision variables need a domain
+    #[serde(default = "Domain::binary")]
+    pub domain_constraint: Domain,
 }
 
 /// Class definition update model for PATCH operations
@@ -121,7 +121,7 @@ impl Default for ClassDef {
             relationships: Vec::new(),
             derived: Vec::new(),
             description: None,
-            domain_constraint: None,
+            domain_constraint: Domain::binary(),
             created_by: system_user.clone(),
             created_at: now,
             updated_by: system_user,
@@ -167,7 +167,7 @@ impl ClassDef {
             self.description = Some(description);
         }
         if let Some(domain_constraint) = update.domain_constraint {
-            self.domain_constraint = Some(domain_constraint);
+            self.domain_constraint = domain_constraint;
         }
         
         // Update audit fields (preserve created_by/created_at)

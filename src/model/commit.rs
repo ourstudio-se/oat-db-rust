@@ -1,6 +1,6 @@
 use serde::{Deserialize, Serialize};
 
-use crate::model::{Id, Schema, Instance, ClassDef, PropertyValue, RelationshipSelection};
+use crate::model::{ClassDef, Id, Instance, PropertyValue, RelationshipSelection, Schema};
 
 /// A commit represents an immutable snapshot of a database state
 /// Contains compressed binary data with schema + instances
@@ -18,13 +18,13 @@ pub struct Commit {
     pub message: Option<String>,
     /// When the commit was created
     pub created_at: String, // ISO 8601 string
-    
+
     /// Compressed binary data containing schema + instances
     /// This is the actual git-like blob storage
     pub data: Vec<u8>,
     /// Uncompressed size for monitoring
     pub data_size: i64,
-    
+
     /// Metadata for quick access without decompressing
     pub schema_classes_count: i32,
     pub instances_count: i32,
@@ -41,19 +41,19 @@ pub struct WorkingCommit {
     /// Branch this working commit is for (None for detached head)
     pub branch_name: Option<String>,
     /// Base commit this work is built on
-    pub based_on_hash: Option<String>,
+    pub based_on_hash: String,
     /// Author making the changes
     pub author: Option<String>,
     /// When the working commit was created
     pub created_at: String, // ISO 8601 string
     /// When the working commit was last updated
     pub updated_at: String, // ISO 8601 string
-    
+
     /// Current mutable schema (JSON format)
     pub schema_data: Schema,
     /// Current mutable instances (JSON format)
     pub instances_data: Vec<Instance>,
-    
+
     /// Status of the working commit
     pub status: WorkingCommitStatus,
 }
@@ -115,8 +115,14 @@ impl Commit {
     ) -> Self {
         let serialized = serde_json::to_string(&commit_data).unwrap();
         let compressed_data = Self::compress_data(serialized.as_bytes());
-        let hash = Self::calculate_hash(&database_id, parent_hash.as_deref(), &serialized, author.as_deref(), message.as_deref());
-        
+        let hash = Self::calculate_hash(
+            &database_id,
+            parent_hash.as_deref(),
+            &serialized,
+            author.as_deref(),
+            message.as_deref(),
+        );
+
         Self {
             hash,
             database_id,
@@ -130,7 +136,7 @@ impl Commit {
             instances_count: commit_data.instances.len() as i32,
         }
     }
-    
+
     /// Calculate SHA-256 hash for the commit
     fn calculate_hash(
         database_id: &str,
@@ -140,7 +146,7 @@ impl Commit {
         message: Option<&str>,
     ) -> String {
         use sha2::{Digest, Sha256};
-        
+
         let mut hasher = Sha256::new();
         hasher.update(format!("database:{}\n", database_id));
         if let Some(parent) = parent_hash {
@@ -153,26 +159,26 @@ impl Commit {
             hasher.update(format!("message:{}\n", message));
         }
         hasher.update(format!("data:{}\n", data));
-        
+
         hex::encode(hasher.finalize())
     }
-    
+
     /// Compress data using gzip
     fn compress_data(data: &[u8]) -> Vec<u8> {
         use flate2::write::GzEncoder;
         use flate2::Compression;
         use std::io::Write;
-        
+
         let mut encoder = GzEncoder::new(Vec::new(), Compression::default());
         encoder.write_all(data).unwrap();
         encoder.finish().unwrap()
     }
-    
+
     /// Decompress data from gzip
     fn decompress_data(data: &[u8]) -> Result<Vec<u8>, std::io::Error> {
         use flate2::read::GzDecoder;
         use std::io::Read;
-        
+
         // Check if data is gzip-compressed by looking for gzip magic bytes (1f 8b)
         if data.len() >= 2 && data[0] == 0x1f && data[1] == 0x8b {
             // Data is gzip-compressed, decompress it
@@ -185,15 +191,20 @@ impl Commit {
             Ok(data.to_vec())
         }
     }
-    
+
     /// Decompress and deserialize the commit data
     pub fn get_data(&self) -> Result<CommitData, Box<dyn std::error::Error>> {
         let decompressed = Self::decompress_data(&self.data)?;
         let json_str = String::from_utf8(decompressed)?;
-        let commit_data: CommitData = serde_json::from_str(&json_str)?;
+        let mut commit_data: CommitData = serde_json::from_str(&json_str)?;
+        
+        // Normalize the schema to ensure all PropertyDef instances have the value field
+        // This handles migration from older versions that don't have the value field
+        commit_data.schema.normalize();
+        
         Ok(commit_data)
     }
-    
+
     /// Create an empty initial commit
     pub fn create_initial(database_id: Id, author: Option<String>) -> Self {
         let empty_schema = Schema {
@@ -202,12 +213,12 @@ impl Commit {
             description: None,
             classes: Vec::new(),
         };
-        
+
         let commit_data = CommitData {
             schema: empty_schema,
             instances: Vec::new(),
         };
-        
+
         Self::new(
             database_id,
             None, // No parent for initial commit
@@ -228,12 +239,12 @@ impl WorkingCommit {
     ) -> Result<Self, Box<dyn std::error::Error>> {
         let commit_data = based_on_commit.get_data()?;
         let now = chrono::Utc::now().to_rfc3339();
-        
+
         Ok(Self {
             id: crate::model::generate_id(),
             database_id,
             branch_name,
-            based_on_hash: Some(based_on_commit.hash.clone()),
+            based_on_hash: based_on_commit.hash.clone(),
             author,
             created_at: now.clone(),
             updated_at: now,
@@ -242,52 +253,30 @@ impl WorkingCommit {
             status: WorkingCommitStatus::Active,
         })
     }
-    
-    /// Create an empty working commit (for new databases)
-    pub fn create_empty(
-        database_id: Id,
-        branch_name: Option<String>,
-        author: Option<String>,
-    ) -> Self {
-        let empty_schema = Schema {
-            id: format!("schema-{}", database_id),
-            // branch_id field removed in commit-based architecture
-            description: None,
-            classes: Vec::new(),
-        };
-        
-        let now = chrono::Utc::now().to_rfc3339();
-        
-        Self {
-            id: crate::model::generate_id(),
-            database_id,
-            branch_name,
-            based_on_hash: None,
-            author,
-            created_at: now.clone(),
-            updated_at: now,
-            schema_data: empty_schema,
-            instances_data: Vec::new(),
-            status: WorkingCommitStatus::Active,
-        }
-    }
-    
+
     /// Convert this working commit into an immutable commit
     pub fn to_commit(&self, message: String) -> Commit {
         let commit_data = CommitData {
             schema: self.schema_data.clone(),
             instances: self.instances_data.clone(),
         };
-        
+
+        // For initial commits, parent_hash should be None
+        let parent_hash = if self.based_on_hash.is_empty() {
+            None
+        } else {
+            Some(self.based_on_hash.clone())
+        };
+
         Commit::new(
             self.database_id.clone(),
-            self.based_on_hash.clone(),
+            parent_hash,
             commit_data,
             self.author.clone(),
             Some(message),
         )
     }
-    
+
     /// Update the updated_at timestamp
     pub fn touch(&mut self) {
         self.updated_at = chrono::Utc::now().to_rfc3339();
@@ -304,7 +293,7 @@ pub struct WorkingCommitChanges {
     /// Branch this working commit is for
     pub branch_name: Option<String>,
     /// Base commit this work is built on
-    pub based_on_hash: Option<String>,
+    pub based_on_hash: String,
     /// Author making the changes
     pub author: Option<String>,
     /// When the working commit was created
@@ -313,7 +302,7 @@ pub struct WorkingCommitChanges {
     pub updated_at: String,
     /// Status of the working commit
     pub status: WorkingCommitStatus,
-    
+
     /// Changes to schema classes
     pub schema_changes: SchemaChanges,
     /// Changes to instances
@@ -426,8 +415,11 @@ pub struct GranularChanges {
 
 impl WorkingCommit {
     /// Generate a diff-style view showing only changes compared to the base commit
-    pub async fn to_changes<S>(&self, store: &S) -> Result<WorkingCommitChanges, Box<dyn std::error::Error>>
-    where 
+    pub async fn to_changes<S>(
+        &self,
+        store: &S,
+    ) -> Result<WorkingCommitChanges, Box<dyn std::error::Error>>
+    where
         S: crate::store::traits::Store,
     {
         self.to_changes_with_options(store, false).await
@@ -435,22 +427,20 @@ impl WorkingCommit {
 
     /// Generate a diff-style view showing only changes compared to the base commit
     /// with optional granular field-level change tracking
-    pub async fn to_changes_with_options<S>(&self, store: &S, include_granular: bool) -> Result<WorkingCommitChanges, Box<dyn std::error::Error>>
-    where 
+    pub async fn to_changes_with_options<S>(
+        &self,
+        store: &S,
+        include_granular: bool,
+    ) -> Result<WorkingCommitChanges, Box<dyn std::error::Error>>
+    where
         S: crate::store::traits::Store,
     {
-        let base_data = if let Some(base_hash) = &self.based_on_hash {
-            // Get the base commit data
-            match store.get_commit(base_hash).await? {
-                Some(base_commit) => {
-                    let commit_data = base_commit.get_data()?;
-                    Some((commit_data.schema, commit_data.instances))
-                }
-                None => None,
+        let base_data = match store.get_commit(&self.based_on_hash).await? {
+            Some(base_commit) => {
+                let commit_data = base_commit.get_data()?;
+                Some((commit_data.schema, commit_data.instances))
             }
-        } else {
-            // No base commit (initial working commit)
-            None
+            None => None,
         };
 
         let (base_schema, base_instances) = match base_data {
@@ -489,13 +479,16 @@ impl WorkingCommit {
 
         // Compare schemas
         let schema_changes = Self::diff_schemas(&base_schema, &self.schema_data);
-        
+
         // Compare instances
         let instance_changes = Self::diff_instances(&base_instances, &self.instances_data);
 
         // Optionally generate granular changes
         let granular_changes = if include_granular {
-            Some(Self::diff_instances_granular(&base_instances, &self.instances_data))
+            Some(Self::diff_instances_granular(
+                &base_instances,
+                &self.instances_data,
+            ))
         } else {
             None
         };
@@ -518,14 +511,12 @@ impl WorkingCommit {
     /// Compare two schemas and return the differences
     fn diff_schemas(base: &Schema, current: &Schema) -> SchemaChanges {
         use std::collections::HashMap;
-        
+
         // Create maps for easier comparison
-        let base_classes: HashMap<String, &ClassDef> = base.classes.iter()
-            .map(|c| (c.id.clone(), c))
-            .collect();
-        let current_classes: HashMap<String, &ClassDef> = current.classes.iter()
-            .map(|c| (c.id.clone(), c))
-            .collect();
+        let base_classes: HashMap<String, &ClassDef> =
+            base.classes.iter().map(|c| (c.id.clone(), c)).collect();
+        let current_classes: HashMap<String, &ClassDef> =
+            current.classes.iter().map(|c| (c.id.clone(), c)).collect();
 
         let mut added = Vec::new();
         let mut modified = Vec::new();
@@ -564,14 +555,12 @@ impl WorkingCommit {
     /// Compare two instance lists and return the differences
     fn diff_instances(base: &[Instance], current: &[Instance]) -> InstanceChanges {
         use std::collections::HashMap;
-        
+
         // Create maps for easier comparison
-        let base_instances: HashMap<String, &Instance> = base.iter()
-            .map(|i| (i.id.clone(), i))
-            .collect();
-        let current_instances: HashMap<String, &Instance> = current.iter()
-            .map(|i| (i.id.clone(), i))
-            .collect();
+        let base_instances: HashMap<String, &Instance> =
+            base.iter().map(|i| (i.id.clone(), i)).collect();
+        let current_instances: HashMap<String, &Instance> =
+            current.iter().map(|i| (i.id.clone(), i)).collect();
 
         let mut added = Vec::new();
         let mut modified = Vec::new();
@@ -610,14 +599,12 @@ impl WorkingCommit {
     /// Compare two instance lists and return granular field-level differences
     fn diff_instances_granular(base: &[Instance], current: &[Instance]) -> GranularChanges {
         use std::collections::HashMap;
-        
+
         // Create maps for easier comparison
-        let base_instances: HashMap<String, &Instance> = base.iter()
-            .map(|i| (i.id.clone(), i))
-            .collect();
-        let current_instances: HashMap<String, &Instance> = current.iter()
-            .map(|i| (i.id.clone(), i))
-            .collect();
+        let base_instances: HashMap<String, &Instance> =
+            base.iter().map(|i| (i.id.clone(), i)).collect();
+        let current_instances: HashMap<String, &Instance> =
+            current.iter().map(|i| (i.id.clone(), i)).collect();
 
         let mut instance_changes = Vec::new();
 
@@ -704,7 +691,9 @@ impl WorkingCommit {
                     let mut relationship_changes = Vec::new();
 
                     // Compare properties
-                    let all_prop_ids: std::collections::HashSet<String> = base_instance.properties.keys()
+                    let all_prop_ids: std::collections::HashSet<String> = base_instance
+                        .properties
+                        .keys()
                         .chain(current_instance.properties.keys())
                         .cloned()
                         .collect();
@@ -750,7 +739,9 @@ impl WorkingCommit {
                     }
 
                     // Compare relationships
-                    let all_rel_ids: std::collections::HashSet<String> = base_instance.relationships.keys()
+                    let all_rel_ids: std::collections::HashSet<String> = base_instance
+                        .relationships
+                        .keys()
                         .chain(current_instance.relationships.keys())
                         .cloned()
                         .collect();
@@ -819,7 +810,7 @@ impl WorkingCommit {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::model::{PropertyValue, TypedValue, DataType};
+    use crate::model::{DataType, PropertyValue, TypedValue};
     use std::collections::HashMap;
 
     #[tokio::test]
@@ -883,25 +874,23 @@ mod tests {
         };
 
         // Test granular change detection
-        let granular_changes = WorkingCommit::diff_instances_granular(
-            &[base_instance],
-            &[modified_instance],
-        );
+        let granular_changes =
+            WorkingCommit::diff_instances_granular(&[base_instance], &[modified_instance]);
 
         // Verify we have one modified instance
         assert_eq!(granular_changes.instance_changes.len(), 1);
-        
+
         let instance_change = &granular_changes.instance_changes[0];
         assert_eq!(instance_change.instance_id, "bike-awesome-bike");
         assert_eq!(instance_change.change_type, InstanceChangeType::Modified);
 
         // Verify we have one property change (price)
         assert_eq!(instance_change.property_changes.len(), 1);
-        
+
         let prop_change = &instance_change.property_changes[0];
         assert_eq!(prop_change.property_id, "prop-price");
         assert_eq!(prop_change.change_type, ChangeType::Modified);
-        
+
         // Verify old and new values exist
         assert!(prop_change.old_value.is_some());
         assert!(prop_change.new_value.is_some());
@@ -972,14 +961,12 @@ mod tests {
         };
 
         // Test granular change detection
-        let granular_changes = WorkingCommit::diff_instances_granular(
-            &[base_instance],
-            &[modified_instance],
-        );
+        let granular_changes =
+            WorkingCommit::diff_instances_granular(&[base_instance], &[modified_instance]);
 
         // Verify we have one modified instance
         assert_eq!(granular_changes.instance_changes.len(), 1);
-        
+
         let instance_change = &granular_changes.instance_changes[0];
         assert_eq!(instance_change.instance_id, "bike-test");
         assert_eq!(instance_change.change_type, InstanceChangeType::Modified);

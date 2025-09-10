@@ -165,7 +165,13 @@ mod tests {
     fn test_dynamic_selector_creation() {
         let filter = InstanceFilter {
             types: Some(vec!["Color".to_string()]),
-            where_clause: Some(json!({"all": ["price_low"]})),
+            where_clause: Some(crate::logic::FilterExpr::All {
+                all: vec![
+                    crate::logic::FilterExpr::Exists {
+                        exists: crate::logic::JsonPath("$.price_low".to_string()),
+                    }
+                ],
+            }),
             sort: None,
             limit: None,
         };

@@ -381,8 +381,14 @@ impl InstanceStore for PostgresStore {
         let mut instances = commit_data.instances;
 
         if let Some(filter) = filter {
+            // Apply type filter
             if let Some(types) = filter.types {
                 instances.retain(|inst| types.contains(&inst.class_id));
+            }
+
+            // Apply complex where clause filter if present
+            if let Some(filter_expr) = &filter.where_clause {
+                instances = crate::logic::filter_instances(instances, filter_expr);
             }
         }
 
@@ -495,11 +501,11 @@ impl crate::store::traits::CommitStore for PostgresStore {
         };
 
         let mut query = sqlx::query(query_str).bind(database_id);
-        
+
         if let Some(parent) = parent_hash {
             query = query.bind(parent);
         }
-        
+
         let rows = query
             .fetch_all(&self.pool)
             .await
@@ -513,7 +519,9 @@ impl crate::store::traits::CommitStore for PostgresStore {
                 parent_hash: row.get("parent_hash"),
                 author: row.get("author"),
                 message: row.get("message"),
-                created_at: row.get::<chrono::DateTime<chrono::Utc>, _>("created_at").to_rfc3339(),
+                created_at: row
+                    .get::<chrono::DateTime<chrono::Utc>, _>("created_at")
+                    .to_rfc3339(),
                 data: row.get("data"),
                 data_size: row.get("data_size"),
                 schema_classes_count: row.get("schema_classes_count"),
@@ -610,11 +618,14 @@ impl crate::store::traits::WorkingCommitStore for PostgresStore {
             return Ok(None);
         };
 
-        let schema_data: crate::model::Schema =
+        let mut schema_data: crate::model::Schema =
             serde_json::from_value(row.schema_data).context("Failed to deserialize schema data")?;
         let instances_data: Vec<crate::model::Instance> =
             serde_json::from_value(row.instances_data)
                 .context("Failed to deserialize instances data")?;
+
+        // Normalize the schema to ensure all PropertyDef instances have the value field
+        schema_data.normalize();
 
         let status = match row.status.as_str() {
             "active" => crate::model::WorkingCommitStatus::Active,
@@ -627,7 +638,7 @@ impl crate::store::traits::WorkingCommitStore for PostgresStore {
             id: row.id,
             database_id: row.database_id,
             branch_name: row.branch_name,
-            based_on_hash: row.based_on_hash,
+            based_on_hash: row.based_on_hash.unwrap_or_else(String::new),
             author: row.author,
             created_at: row.created_at.to_rfc3339(),
             updated_at: row.updated_at.to_rfc3339(),
@@ -659,8 +670,11 @@ impl crate::store::traits::WorkingCommitStore for PostgresStore {
 
         let mut working_commits = Vec::new();
         for row in rows {
-            let schema_data: crate::model::Schema = serde_json::from_value(row.schema_data)
+            let mut schema_data: crate::model::Schema = serde_json::from_value(row.schema_data)
                 .context("Failed to deserialize schema data")?;
+            
+            // Normalize the schema to ensure all PropertyDef instances have the value field
+            schema_data.normalize();
             let instances_data: Vec<crate::model::Instance> =
                 serde_json::from_value(row.instances_data)
                     .context("Failed to deserialize instances data")?;
@@ -676,7 +690,7 @@ impl crate::store::traits::WorkingCommitStore for PostgresStore {
                 id: row.id,
                 database_id: row.database_id,
                 branch_name: row.branch_name,
-                based_on_hash: row.based_on_hash,
+                based_on_hash: row.based_on_hash.unwrap_or_else(String::new),
                 author: row.author,
                 created_at: row.created_at.to_rfc3339(),
                 updated_at: row.updated_at.to_rfc3339(),
@@ -721,11 +735,7 @@ impl crate::store::traits::WorkingCommitStore for PostgresStore {
             id: crate::model::generate_id(),
             database_id: database_id.clone(),
             branch_name: Some(branch_name.to_string()),
-            based_on_hash: if !branch.current_commit_hash.is_empty() {
-                Some(branch.current_commit_hash)
-            } else {
-                None
-            },
+            based_on_hash: branch.current_commit_hash,
             author: new_working_commit.author,
             created_at: now.clone(),
             updated_at: now,
@@ -754,7 +764,7 @@ impl crate::store::traits::WorkingCommitStore for PostgresStore {
             working_commit.id,
             working_commit.database_id,
             working_commit.branch_name,
-            working_commit.based_on_hash,
+            if working_commit.based_on_hash.is_empty() { None } else { Some(working_commit.based_on_hash.as_str()) },
             working_commit.author,
             chrono::DateTime::parse_from_rfc3339(&working_commit.created_at)
                 .context("Failed to parse working commit created_at")?
@@ -845,11 +855,14 @@ impl crate::store::traits::WorkingCommitStore for PostgresStore {
             return Ok(None);
         };
 
-        let schema_data: crate::model::Schema =
+        let mut schema_data: crate::model::Schema =
             serde_json::from_value(row.schema_data).context("Failed to deserialize schema data")?;
         let instances_data: Vec<crate::model::Instance> =
             serde_json::from_value(row.instances_data)
                 .context("Failed to deserialize instances data")?;
+
+        // Normalize the schema to ensure all PropertyDef instances have the value field
+        schema_data.normalize();
 
         let status = match row.status.as_str() {
             "active" => crate::model::WorkingCommitStatus::Active,
@@ -862,7 +875,7 @@ impl crate::store::traits::WorkingCommitStore for PostgresStore {
             id: row.id,
             database_id: row.database_id,
             branch_name: row.branch_name,
-            based_on_hash: row.based_on_hash,
+            based_on_hash: row.based_on_hash.unwrap_or_else(String::new),
             author: row.author,
             created_at: row.created_at.to_rfc3339(),
             updated_at: row.updated_at.to_rfc3339(),
@@ -876,11 +889,14 @@ impl crate::store::traits::WorkingCommitStore for PostgresStore {
 // Simplified TagStore implementation using only commit_tags
 #[async_trait::async_trait]
 impl crate::store::traits::TagStore for PostgresStore {
-    async fn create_commit_tag(&self, tag: crate::model::NewCommitTag) -> Result<crate::model::CommitTag> {
+    async fn create_commit_tag(
+        &self,
+        tag: crate::model::NewCommitTag,
+    ) -> Result<crate::model::CommitTag> {
         let metadata = tag.metadata.clone().unwrap_or_default();
-        let metadata_json = serde_json::to_value(&metadata)
-            .context("Failed to serialize metadata")?;
-        
+        let metadata_json =
+            serde_json::to_value(&metadata).context("Failed to serialize metadata")?;
+
         let row = sqlx::query!(
             r#"
             INSERT INTO commit_tags (commit_hash, tag_type, tag_name, tag_description, created_by, metadata)
@@ -926,10 +942,13 @@ impl crate::store::traits::TagStore for PostgresStore {
 
         let mut tags = Vec::new();
         for row in rows {
-            let tag_type = row.tag_type.parse()
+            let tag_type = row
+                .tag_type
+                .parse()
                 .map_err(|e| anyhow::anyhow!("Invalid tag type: {}", e))?;
-            let metadata = serde_json::from_value(row.metadata.unwrap_or_else(|| serde_json::json!({})))
-                .context("Failed to deserialize metadata")?;
+            let metadata =
+                serde_json::from_value(row.metadata.unwrap_or_else(|| serde_json::json!({})))
+                    .context("Failed to deserialize metadata")?;
 
             tags.push(crate::model::CommitTag {
                 id: row.id,
@@ -947,23 +966,27 @@ impl crate::store::traits::TagStore for PostgresStore {
     }
 
     async fn delete_commit_tag(&self, tag_id: i32) -> Result<bool> {
-        let result = sqlx::query!(
-            "DELETE FROM commit_tags WHERE id = $1",
-            tag_id
-        )
-        .execute(&self.pool)
-        .await
-        .context("Failed to delete commit tag")?;
+        let result = sqlx::query!("DELETE FROM commit_tags WHERE id = $1", tag_id)
+            .execute(&self.pool)
+            .await
+            .context("Failed to delete commit tag")?;
 
         Ok(result.rows_affected() > 0)
     }
 
-    async fn search_commits_by_tags(&self, database_id: &crate::model::Id, query: crate::model::TagQuery) -> Result<Vec<crate::model::TaggedCommit>> {
+    async fn search_commits_by_tags(
+        &self,
+        database_id: &crate::model::Id,
+        query: crate::model::TagQuery,
+    ) -> Result<Vec<crate::model::TaggedCommit>> {
         // Simple search implementation - can be enhanced with dynamic SQL for complex queries
         self.list_tagged_commits(database_id, query.limit).await
     }
 
-    async fn get_tagged_commit(&self, commit_hash: &str) -> Result<Option<crate::model::TaggedCommit>> {
+    async fn get_tagged_commit(
+        &self,
+        commit_hash: &str,
+    ) -> Result<Option<crate::model::TaggedCommit>> {
         // Get the commit first
         let commit_row = sqlx::query!(
             r#"
@@ -994,7 +1017,11 @@ impl crate::store::traits::TagStore for PostgresStore {
         }))
     }
 
-    async fn list_tagged_commits(&self, database_id: &crate::model::Id, limit: Option<i32>) -> Result<Vec<crate::model::TaggedCommit>> {
+    async fn list_tagged_commits(
+        &self,
+        database_id: &crate::model::Id,
+        limit: Option<i32>,
+    ) -> Result<Vec<crate::model::TaggedCommit>> {
         let limit_value = limit.unwrap_or(50).min(100); // Default 50, max 100
 
         let rows = sqlx::query!(
