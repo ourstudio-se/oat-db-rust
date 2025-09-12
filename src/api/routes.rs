@@ -4,7 +4,7 @@ use axum::{
 };
 use std::sync::Arc;
 
-use crate::api::{branch_handlers, handlers};
+use crate::api::{branch_handlers, handlers, merge_handlers};
 use crate::store::traits::Store;
 
 pub fn create_router<S: Store + 'static>() -> Router<Arc<S>> {
@@ -246,8 +246,30 @@ pub fn create_router<S: Store + 'static>() -> Router<Arc<S>> {
             delete(handlers::delete_instance::<S>),
         )
         // Branch operations (git-like)
+        // NEW: Two-phase merge operations with conflict resolution
         .route(
-            "/databases/:db_id/branches/:branch_id/merge",
+            "/databases/:db_id/branches/:branch_name/merge",
+            post(merge_handlers::start_merge::<S>),
+        )
+        .route(
+            "/databases/:db_id/branches/:branch_name/merge/validate",
+            post(merge_handlers::validate_merge::<S>),
+        )
+        .route(
+            "/databases/:db_id/branches/:branch_name/merge/status",
+            get(merge_handlers::get_merge_status::<S>),
+        )
+        .route(
+            "/databases/:db_id/branches/:branch_name/merge/resolve",
+            post(merge_handlers::resolve_merge_conflicts::<S>),
+        )
+        .route(
+            "/databases/:db_id/branches/:branch_name/merge",
+            delete(merge_handlers::abort_merge::<S>),
+        )
+        // Legacy merge endpoint (deprecated)
+        .route(
+            "/databases/:db_id/branches/:branch_id/merge-legacy",
             post(branch_handlers::merge_branch::<S>),
         )
         .route(

@@ -119,6 +119,15 @@ pub struct BranchWithCommitResponse {
     pub created_at: String,
     pub status: crate::model::BranchStatus,
     pub current_commit: Option<CommitWithTagsResponse>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub merge_status: Option<MergeStatusInfo>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct MergeStatusInfo {
+    pub working_commit_id: String,
+    pub conflicts_count: usize,
+    pub resolved_conflicts_count: usize,
 }
 
 /// Enhanced working commit response with expanded relationships
@@ -3546,6 +3555,777 @@ pub async fn get_openapi_spec<S: Store>(_state: State<AppState<S>>) -> Json<serd
                         }
                     }
                 }
+            },
+            "/databases/{db_id}/branches/{branch_name}/merge": {
+                "post": {
+                    "tags": ["Branch Operations"],
+                    "summary": "Start merge operation",
+                    "description": "Initiate a two-phase merge operation. This creates a merge state that can be validated and resolved before completion.",
+                    "parameters": [
+                        {
+                            "name": "db_id",
+                            "in": "path",
+                            "required": true,
+                            "description": "Database ID",
+                            "schema": {
+                                "type": "string"
+                            }
+                        },
+                        {
+                            "name": "branch_name",
+                            "in": "path",
+                            "required": true,
+                            "description": "Target branch name to merge into",
+                            "schema": {
+                                "type": "string"
+                            }
+                        }
+                    ],
+                    "requestBody": {
+                        "required": true,
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "type": "object",
+                                    "required": ["source_branch"],
+                                    "properties": {
+                                        "source_branch": {
+                                            "type": "string",
+                                            "description": "Source branch to merge from"
+                                        },
+                                        "strategy": {
+                                            "type": "string",
+                                            "enum": ["recursive", "ours", "theirs"],
+                                            "description": "Merge strategy to use"
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    },
+                    "responses": {
+                        "200": {
+                            "description": "Merge initiated successfully",
+                            "content": {
+                                "application/json": {
+                                    "schema": {
+                                        "$ref": "#/components/schemas/MergeStatus"
+                                    }
+                                }
+                            }
+                        },
+                        "409": {
+                            "description": "Merge conflicts detected"
+                        }
+                    }
+                }
+            },
+            "/databases/{db_id}/branches/{branch_name}/merge/validate": {
+                "post": {
+                    "tags": ["Branch Operations"],
+                    "summary": "Validate merge operation",
+                    "description": "Validate a merge operation before applying it",
+                    "parameters": [
+                        {
+                            "name": "db_id",
+                            "in": "path",
+                            "required": true,
+                            "description": "Database ID",
+                            "schema": {
+                                "type": "string"
+                            }
+                        },
+                        {
+                            "name": "branch_name",
+                            "in": "path",
+                            "required": true,
+                            "description": "Target branch name",
+                            "schema": {
+                                "type": "string"
+                            }
+                        }
+                    ],
+                    "requestBody": {
+                        "required": true,
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "type": "object",
+                                    "required": ["source_branch"],
+                                    "properties": {
+                                        "source_branch": {
+                                            "type": "string",
+                                            "description": "Source branch to validate merge from"
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    },
+                    "responses": {
+                        "200": {
+                            "description": "Merge validation result",
+                            "content": {
+                                "application/json": {
+                                    "schema": {
+                                        "$ref": "#/components/schemas/MergeValidationResult"
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            },
+            "/databases/{db_id}/branches/{branch_name}/merge/status": {
+                "get": {
+                    "tags": ["Branch Operations"],
+                    "summary": "Get merge status",
+                    "description": "Get the current status of an ongoing merge operation",
+                    "parameters": [
+                        {
+                            "name": "db_id",
+                            "in": "path",
+                            "required": true,
+                            "description": "Database ID",
+                            "schema": {
+                                "type": "string"
+                            }
+                        },
+                        {
+                            "name": "branch_name",
+                            "in": "path",
+                            "required": true,
+                            "description": "Branch name with ongoing merge",
+                            "schema": {
+                                "type": "string"
+                            }
+                        }
+                    ],
+                    "responses": {
+                        "200": {
+                            "description": "Current merge status",
+                            "content": {
+                                "application/json": {
+                                    "schema": {
+                                        "$ref": "#/components/schemas/MergeStatus"
+                                    }
+                                }
+                            }
+                        },
+                        "404": {
+                            "description": "No merge in progress"
+                        }
+                    }
+                }
+            },
+            "/databases/{db_id}/branches/{branch_name}/merge/resolve": {
+                "post": {
+                    "tags": ["Branch Operations"],
+                    "summary": "Resolve merge conflicts",
+                    "description": "Submit conflict resolutions for an ongoing merge",
+                    "parameters": [
+                        {
+                            "name": "db_id",
+                            "in": "path",
+                            "required": true,
+                            "description": "Database ID",
+                            "schema": {
+                                "type": "string"
+                            }
+                        },
+                        {
+                            "name": "branch_name",
+                            "in": "path",
+                            "required": true,
+                            "description": "Branch name with merge conflicts",
+                            "schema": {
+                                "type": "string"
+                            }
+                        }
+                    ],
+                    "requestBody": {
+                        "required": true,
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "type": "object",
+                                    "required": ["resolutions"],
+                                    "properties": {
+                                        "resolutions": {
+                                            "type": "object",
+                                            "additionalProperties": {
+                                                "$ref": "#/components/schemas/ConflictResolution"
+                                            },
+                                            "description": "Map of conflict index to resolution"
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    },
+                    "responses": {
+                        "200": {
+                            "description": "Conflicts resolved, merge completed",
+                            "content": {
+                                "application/json": {
+                                    "schema": {
+                                        "$ref": "#/components/schemas/MergeResult"
+                                    }
+                                }
+                            }
+                        },
+                        "400": {
+                            "description": "Invalid resolutions"
+                        }
+                    }
+                }
+            },
+            "/databases/{db_id}/branches/{branch_name}/merge": {
+                "delete": {
+                    "tags": ["Branch Operations"],
+                    "summary": "Abort merge",
+                    "description": "Cancel an ongoing merge operation",
+                    "parameters": [
+                        {
+                            "name": "db_id",
+                            "in": "path",
+                            "required": true,
+                            "description": "Database ID",
+                            "schema": {
+                                "type": "string"
+                            }
+                        },
+                        {
+                            "name": "branch_name",
+                            "in": "path",
+                            "required": true,
+                            "description": "Branch name with ongoing merge",
+                            "schema": {
+                                "type": "string"
+                            }
+                        }
+                    ],
+                    "responses": {
+                        "200": {
+                            "description": "Merge aborted successfully"
+                        },
+                        "404": {
+                            "description": "No merge in progress"
+                        }
+                    }
+                }
+            },
+            "/commits/{commit_hash}/tags": {
+                "post": {
+                    "tags": ["Commit Management"],
+                    "summary": "Create commit tag",
+                    "description": "Add a tag to a commit for easy reference and searching",
+                    "parameters": [
+                        {
+                            "name": "commit_hash",
+                            "in": "path",
+                            "required": true,
+                            "description": "Commit hash to tag",
+                            "schema": {
+                                "type": "string"
+                            }
+                        }
+                    ],
+                    "requestBody": {
+                        "required": true,
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "type": "object",
+                                    "required": ["tag", "tag_type"],
+                                    "properties": {
+                                        "tag": {
+                                            "type": "string",
+                                            "description": "Tag value"
+                                        },
+                                        "tag_type": {
+                                            "type": "string",
+                                            "enum": ["release", "checkpoint", "experiment", "custom"],
+                                            "description": "Type of tag"
+                                        },
+                                        "description": {
+                                            "type": "string",
+                                            "description": "Optional tag description"
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    },
+                    "responses": {
+                        "201": {
+                            "description": "Tag created successfully",
+                            "content": {
+                                "application/json": {
+                                    "schema": {
+                                        "$ref": "#/components/schemas/CommitTag"
+                                    }
+                                }
+                            }
+                        }
+                    }
+                },
+                "get": {
+                    "tags": ["Commit Management"],
+                    "summary": "Get commit tags",
+                    "description": "Retrieve all tags for a specific commit",
+                    "parameters": [
+                        {
+                            "name": "commit_hash",
+                            "in": "path",
+                            "required": true,
+                            "description": "Commit hash",
+                            "schema": {
+                                "type": "string"
+                            }
+                        }
+                    ],
+                    "responses": {
+                        "200": {
+                            "description": "List of commit tags",
+                            "content": {
+                                "application/json": {
+                                    "schema": {
+                                        "type": "array",
+                                        "items": {
+                                            "$ref": "#/components/schemas/CommitTag"
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            },
+            "/tags/{tag_id}": {
+                "delete": {
+                    "tags": ["Commit Management"],
+                    "summary": "Delete commit tag",
+                    "description": "Remove a tag from a commit",
+                    "parameters": [
+                        {
+                            "name": "tag_id",
+                            "in": "path",
+                            "required": true,
+                            "description": "Tag ID to delete",
+                            "schema": {
+                                "type": "string"
+                            }
+                        }
+                    ],
+                    "responses": {
+                        "204": {
+                            "description": "Tag deleted successfully"
+                        },
+                        "404": {
+                            "description": "Tag not found"
+                        }
+                    }
+                }
+            },
+            "/databases/{db_id}/tagged-commits": {
+                "get": {
+                    "tags": ["Commit Management"],
+                    "summary": "List tagged commits",
+                    "description": "Get all commits with tags in a database",
+                    "parameters": [
+                        {
+                            "name": "db_id",
+                            "in": "path",
+                            "required": true,
+                            "description": "Database ID",
+                            "schema": {
+                                "type": "string"
+                            }
+                        }
+                    ],
+                    "responses": {
+                        "200": {
+                            "description": "List of tagged commits",
+                            "content": {
+                                "application/json": {
+                                    "schema": {
+                                        "type": "array",
+                                        "items": {
+                                            "$ref": "#/components/schemas/TaggedCommit"
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            },
+            "/databases/{db_id}/commits/search": {
+                "get": {
+                    "tags": ["Commit Management"],
+                    "summary": "Search commits by tags",
+                    "description": "Search for commits using tag filters",
+                    "parameters": [
+                        {
+                            "name": "db_id",
+                            "in": "path",
+                            "required": true,
+                            "description": "Database ID",
+                            "schema": {
+                                "type": "string"
+                            }
+                        },
+                        {
+                            "name": "tag",
+                            "in": "query",
+                            "required": false,
+                            "description": "Tag value to search for",
+                            "schema": {
+                                "type": "string"
+                            }
+                        },
+                        {
+                            "name": "tag_type",
+                            "in": "query",
+                            "required": false,
+                            "description": "Tag type to filter by",
+                            "schema": {
+                                "type": "string",
+                                "enum": ["release", "checkpoint", "experiment", "custom"]
+                            }
+                        }
+                    ],
+                    "responses": {
+                        "200": {
+                            "description": "Search results",
+                            "content": {
+                                "application/json": {
+                                    "schema": {
+                                        "type": "array",
+                                        "items": {
+                                            "$ref": "#/components/schemas/TaggedCommit"
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            },
+            "/databases/{db_id}/commits": {
+                "get": {
+                    "tags": ["Commit Data Access"],
+                    "summary": "List database commits",
+                    "description": "Get all commits for a database, optionally filtered by branch",
+                    "parameters": [
+                        {
+                            "name": "db_id",
+                            "in": "path",
+                            "required": true,
+                            "description": "Database ID",
+                            "schema": {
+                                "type": "string"
+                            }
+                        },
+                        {
+                            "name": "branch",
+                            "in": "query",
+                            "required": false,
+                            "description": "Filter commits by branch name",
+                            "schema": {
+                                "type": "string"
+                            }
+                        }
+                    ],
+                    "responses": {
+                        "200": {
+                            "description": "List of commits",
+                            "content": {
+                                "application/json": {
+                                    "schema": {
+                                        "type": "array",
+                                        "items": {
+                                            "$ref": "#/components/schemas/Commit"
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            },
+            "/databases/{db_id}/commits/{commit_hash}/schema": {
+                "get": {
+                    "tags": ["Commit Data Access"],
+                    "summary": "Get commit schema",
+                    "description": "Retrieve the schema at a specific commit",
+                    "parameters": [
+                        {
+                            "name": "db_id",
+                            "in": "path",
+                            "required": true,
+                            "description": "Database ID",
+                            "schema": {
+                                "type": "string"
+                            }
+                        },
+                        {
+                            "name": "commit_hash",
+                            "in": "path",
+                            "required": true,
+                            "description": "Commit hash",
+                            "schema": {
+                                "type": "string"
+                            }
+                        }
+                    ],
+                    "responses": {
+                        "200": {
+                            "description": "Schema at commit",
+                            "content": {
+                                "application/json": {
+                                    "schema": {
+                                        "$ref": "#/components/schemas/Schema"
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            },
+            "/databases/{db_id}/commits/{commit_hash}/instances": {
+                "get": {
+                    "tags": ["Commit Data Access"],
+                    "summary": "List commit instances",
+                    "description": "Get all instances at a specific commit",
+                    "parameters": [
+                        {
+                            "name": "db_id",
+                            "in": "path",
+                            "required": true,
+                            "description": "Database ID",
+                            "schema": {
+                                "type": "string"
+                            }
+                        },
+                        {
+                            "name": "commit_hash",
+                            "in": "path",
+                            "required": true,
+                            "description": "Commit hash",
+                            "schema": {
+                                "type": "string"
+                            }
+                        },
+                        {
+                            "name": "class_id",
+                            "in": "query",
+                            "required": false,
+                            "description": "Filter by class ID",
+                            "schema": {
+                                "type": "string"
+                            }
+                        }
+                    ],
+                    "responses": {
+                        "200": {
+                            "description": "List of instances",
+                            "content": {
+                                "application/json": {
+                                    "schema": {
+                                        "$ref": "#/components/schemas/ListResponse"
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            },
+            "/databases/{db_id}/instances/{instance_id}/batch-query": {
+                "post": {
+                    "tags": ["Database Operations"],
+                    "summary": "Batch query instance configurations",
+                    "description": "Query multiple configurations for an instance with different objectives",
+                    "parameters": [
+                        {
+                            "name": "db_id",
+                            "in": "path",
+                            "required": true,
+                            "description": "Database ID",
+                            "schema": {
+                                "type": "string"
+                            }
+                        },
+                        {
+                            "name": "instance_id",
+                            "in": "path",
+                            "required": true,
+                            "description": "Instance ID",
+                            "schema": {
+                                "type": "string"
+                            }
+                        }
+                    ],
+                    "requestBody": {
+                        "required": true,
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/BatchInstanceQueryRequest"
+                                }
+                            }
+                        }
+                    },
+                    "responses": {
+                        "200": {
+                            "description": "Batch query results",
+                            "content": {
+                                "application/json": {
+                                    "schema": {
+                                        "$ref": "#/components/schemas/BatchQueryResponse"
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            },
+            "/databases/{db_id}/branches/{branch_id}/instances/{instance_id}/batch-query": {
+                "post": {
+                    "tags": ["Branch Instances"],
+                    "summary": "Batch query branch instance configurations",
+                    "description": "Query multiple configurations for a branch instance with different objectives",
+                    "parameters": [
+                        {
+                            "name": "db_id",
+                            "in": "path",
+                            "required": true,
+                            "description": "Database ID",
+                            "schema": {
+                                "type": "string"
+                            }
+                        },
+                        {
+                            "name": "branch_id",
+                            "in": "path",
+                            "required": true,
+                            "description": "Branch ID/Name",
+                            "schema": {
+                                "type": "string"
+                            }
+                        },
+                        {
+                            "name": "instance_id",
+                            "in": "path",
+                            "required": true,
+                            "description": "Instance ID",
+                            "schema": {
+                                "type": "string"
+                            }
+                        }
+                    ],
+                    "requestBody": {
+                        "required": true,
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/BatchInstanceQueryRequest"
+                                }
+                            }
+                        }
+                    },
+                    "responses": {
+                        "200": {
+                            "description": "Batch query results",
+                            "content": {
+                                "application/json": {
+                                    "schema": {
+                                        "$ref": "#/components/schemas/BatchQueryResponse"
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            },
+            "/databases/{db_id}/working-commit": {
+                "get": {
+                    "tags": ["Working Commit Operations"],
+                    "summary": "Get default branch working commit",
+                    "description": "Retrieve the working commit for the main branch",
+                    "parameters": [
+                        {
+                            "name": "db_id",
+                            "in": "path",
+                            "required": true,
+                            "description": "Database ID",
+                            "schema": {
+                                "type": "string"
+                            }
+                        },
+                        {
+                            "name": "resolve_relationships",
+                            "in": "query",
+                            "required": false,
+                            "description": "Whether to resolve relationships in the response",
+                            "schema": {
+                                "type": "boolean"
+                            }
+                        }
+                    ],
+                    "responses": {
+                        "200": {
+                            "description": "Working commit data",
+                            "content": {
+                                "application/json": {
+                                    "schema": {
+                                        "$ref": "#/components/schemas/WorkingCommit"
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            },
+            "/databases/{db_id}/branches/{branch_id}/working-commit/validate": {
+                "get": {
+                    "tags": ["Working Commit Operations"],
+                    "summary": "Validate working commit",
+                    "description": "Validate all staged changes in the working commit",
+                    "parameters": [
+                        {
+                            "name": "db_id",
+                            "in": "path",
+                            "required": true,
+                            "description": "Database ID",
+                            "schema": {
+                                "type": "string"
+                            }
+                        },
+                        {
+                            "name": "branch_id",
+                            "in": "path",
+                            "required": true,
+                            "description": "Branch ID/Name",
+                            "schema": {
+                                "type": "string"
+                            }
+                        }
+                    ],
+                    "responses": {
+                        "200": {
+                            "description": "Validation results",
+                            "content": {
+                                "application/json": {
+                                    "schema": {
+                                        "$ref": "#/components/schemas/ValidationResult"
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
             }
         },
         "components": {
@@ -5218,6 +5998,172 @@ pub async fn get_openapi_spec<S: Store>(_state: State<AppState<S>>) -> Json<serd
                             "description": "Any warnings or notes about the resolution"
                         }
                     }
+                },
+                "MergeStatus": {
+                    "type": "object",
+                    "required": ["status", "target_branch", "source_branch"],
+                    "properties": {
+                        "status": {
+                            "type": "string",
+                            "enum": ["in_progress", "conflicts", "ready", "completed", "aborted"],
+                            "description": "Current status of the merge operation"
+                        },
+                        "target_branch": {
+                            "type": "string",
+                            "description": "Branch being merged into"
+                        },
+                        "source_branch": {
+                            "type": "string",
+                            "description": "Branch being merged from"
+                        },
+                        "conflicts": {
+                            "type": "array",
+                            "items": {
+                                "$ref": "#/components/schemas/MergeConflict"
+                            },
+                            "description": "List of conflicts if status is 'conflicts'"
+                        },
+                        "started_at": {
+                            "type": "string",
+                            "format": "date-time",
+                            "description": "When the merge operation started"
+                        }
+                    }
+                },
+                "MergeConflict": {
+                    "type": "object",
+                    "required": ["conflict_type", "resource_type", "resource_id"],
+                    "properties": {
+                        "conflict_type": {
+                            "type": "string",
+                            "enum": ["create_create", "delete_update", "update_update", "update_delete"],
+                            "description": "Type of conflict"
+                        },
+                        "resource_type": {
+                            "type": "string",
+                            "enum": ["schema", "class", "instance"],
+                            "description": "Type of resource in conflict"
+                        },
+                        "resource_id": {
+                            "type": "string",
+                            "description": "ID of the conflicted resource"
+                        },
+                        "field_path": {
+                            "type": "string",
+                            "description": "Path to the conflicted field"
+                        },
+                        "base_value": {
+                            "description": "Value in the common ancestor"
+                        },
+                        "left_value": {
+                            "description": "Value in the target branch"
+                        },
+                        "right_value": {
+                            "description": "Value in the source branch"
+                        },
+                        "description": {
+                            "type": "string",
+                            "description": "Human-readable description of the conflict"
+                        }
+                    }
+                },
+                "ConflictResolution": {
+                    "type": "object",
+                    "required": ["strategy"],
+                    "properties": {
+                        "strategy": {
+                            "type": "string",
+                            "enum": ["use_left", "use_right", "use_custom"],
+                            "description": "How to resolve the conflict"
+                        },
+                        "custom_value": {
+                            "description": "Custom value when strategy is 'use_custom'"
+                        }
+                    }
+                },
+                "CommitTag": {
+                    "type": "object",
+                    "required": ["id", "commit_hash", "tag", "tag_type", "created_at"],
+                    "properties": {
+                        "id": {
+                            "type": "string",
+                            "description": "Unique tag identifier"
+                        },
+                        "commit_hash": {
+                            "type": "string",
+                            "description": "Hash of the tagged commit"
+                        },
+                        "tag": {
+                            "type": "string",
+                            "description": "Tag value"
+                        },
+                        "tag_type": {
+                            "type": "string",
+                            "enum": ["release", "checkpoint", "experiment", "custom"],
+                            "description": "Type of tag"
+                        },
+                        "description": {
+                            "type": "string",
+                            "description": "Optional tag description"
+                        },
+                        "created_at": {
+                            "type": "string",
+                            "format": "date-time",
+                            "description": "When the tag was created"
+                        },
+                        "created_by": {
+                            "type": "string",
+                            "description": "User who created the tag"
+                        }
+                    }
+                },
+                "TaggedCommit": {
+                    "type": "object",
+                    "required": ["commit", "tags"],
+                    "properties": {
+                        "commit": {
+                            "$ref": "#/components/schemas/Commit"
+                        },
+                        "tags": {
+                            "type": "array",
+                            "items": {
+                                "$ref": "#/components/schemas/CommitTag"
+                            },
+                            "description": "All tags associated with this commit"
+                        }
+                    }
+                },
+                "Commit": {
+                    "type": "object",
+                    "required": ["hash", "message", "author", "timestamp", "parent_hash"],
+                    "properties": {
+                        "hash": {
+                            "type": "string",
+                            "description": "Unique commit hash"
+                        },
+                        "message": {
+                            "type": "string",
+                            "description": "Commit message"
+                        },
+                        "author": {
+                            "type": "string",
+                            "description": "Commit author"
+                        },
+                        "timestamp": {
+                            "type": "string",
+                            "format": "date-time",
+                            "description": "When the commit was created"
+                        },
+                        "parent_hash": {
+                            "type": "string",
+                            "nullable": true,
+                            "description": "Hash of the parent commit"
+                        },
+                        "branch_name": {
+                            "type": "string",
+                            "description": "Branch this commit belongs to"
+                        }
+                    }
                 }
             }
         }
@@ -5923,7 +6869,7 @@ pub struct BranchQuery {
     pub exclude_status: Option<String>,
 }
 
-pub async fn list_branches<S: Store + CommitStore + TagStore>(
+pub async fn list_branches<S: Store + CommitStore + TagStore + WorkingCommitStore>(
     State(store): State<AppState<S>>,
     Path(db_id): Path<Id>,
     Query(query): Query<BranchQuery>,
@@ -5991,6 +6937,24 @@ pub async fn list_branches<S: Store + CommitStore + TagStore>(
                     None
                 };
 
+                // Check for merge working commits on this branch
+                let merge_status = match store.list_working_commits_for_branch(&db_id, &branch.name).await {
+                    Ok(working_commits) => {
+                        // Find merge working commit
+                        working_commits
+                            .into_iter()
+                            .find(|wc| wc.status == crate::model::WorkingCommitStatus::Merging && wc.merge_state.is_some())
+                            .and_then(|wc| {
+                                wc.merge_state.as_ref().map(|merge_state| MergeStatusInfo {
+                                    working_commit_id: wc.id.clone(),
+                                    conflicts_count: merge_state.conflicts.len(),
+                                    resolved_conflicts_count: merge_state.resolutions.len(),
+                                })
+                            })
+                    }
+                    Err(_) => None,
+                };
+
                 branch_responses.push(BranchWithCommitResponse {
                     database_id: branch.database_id,
                     name: branch.name,
@@ -5998,6 +6962,7 @@ pub async fn list_branches<S: Store + CommitStore + TagStore>(
                     created_at: branch.created_at,
                     status: branch.status,
                     current_commit,
+                    merge_status,
                 });
             }
 
@@ -6015,7 +6980,7 @@ pub async fn list_branches<S: Store + CommitStore + TagStore>(
     }
 }
 
-pub async fn get_branch<S: Store + CommitStore + TagStore>(
+pub async fn get_branch<S: Store + CommitStore + TagStore + WorkingCommitStore>(
     State(store): State<AppState<S>>,
     Path((db_id, version_id)): Path<(Id, Id)>,
 ) -> Result<Json<BranchWithCommitResponse>, (StatusCode, Json<ErrorResponse>)> {
@@ -6062,6 +7027,24 @@ pub async fn get_branch<S: Store + CommitStore + TagStore>(
                 None
             };
 
+            // Check for merge working commits on this branch
+            let merge_status = match store.list_working_commits_for_branch(&db_id, &branch.name).await {
+                Ok(working_commits) => {
+                    // Find merge working commit
+                    working_commits
+                        .into_iter()
+                        .find(|wc| wc.status == crate::model::WorkingCommitStatus::Merging && wc.merge_state.is_some())
+                        .and_then(|wc| {
+                            wc.merge_state.as_ref().map(|merge_state| MergeStatusInfo {
+                                working_commit_id: wc.id.clone(),
+                                conflicts_count: merge_state.conflicts.len(),
+                                resolved_conflicts_count: merge_state.resolutions.len(),
+                            })
+                        })
+                }
+                Err(_) => None,
+            };
+
             Ok(Json(BranchWithCommitResponse {
                 database_id: branch.database_id,
                 name: branch.name,
@@ -6069,6 +7052,7 @@ pub async fn get_branch<S: Store + CommitStore + TagStore>(
                 created_at: branch.created_at,
                 status: branch.status,
                 current_commit,
+                merge_status,
             }))
         }
         Ok(None) => {

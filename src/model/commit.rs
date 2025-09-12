@@ -56,6 +56,10 @@ pub struct WorkingCommit {
 
     /// Status of the working commit
     pub status: WorkingCommitStatus,
+    
+    /// Merge state if this is a merge working commit
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub merge_state: Option<crate::model::merge::MergeState>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -67,6 +71,10 @@ pub enum WorkingCommitStatus {
     Committing,
     /// Abandoned (will be garbage collected)
     Abandoned,
+    /// In a merge operation with conflicts to resolve
+    Merging,
+    /// In a rebase operation
+    Rebasing,
 }
 
 impl Default for WorkingCommitStatus {
@@ -251,6 +259,7 @@ impl WorkingCommit {
             schema_data: commit_data.schema,
             instances_data: commit_data.instances,
             status: WorkingCommitStatus::Active,
+            merge_state: None,
         })
     }
 
