@@ -114,9 +114,57 @@ pub enum DefaultPool {
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct FnShort {
+    pub method: String,  // e.g., "sum"
+    pub property: String, // e.g., "price"
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct DerivedDef {
     pub id: Id,
     pub name: String, // Logical name used for derived values (e.g., "totalPrice")
     pub data_type: DataType,
-    pub expr: Expr,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub expr: Option<Expr>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub fn_short: Option<FnShort>,
+}
+
+impl DerivedDef {
+    /// Get the expression for this derived property, expanding fn_short if needed
+    pub fn get_expr(&self, class_def: &ClassDef) -> Option<Expr> {
+        if let Some(expr) = &self.expr {
+            Some(expr.clone())
+        } else if let Some(fn_short) = &self.fn_short {
+            match fn_short.method.as_str() {
+                "sum" => {
+                    // Build expression: own property + sum of all children's property
+                    let own_prop = Expr::Prop {
+                        prop: fn_short.property.clone(),
+                    };
+                    
+                    // Collect all relationship sums
+                    let mut sum_expr = own_prop;
+                    
+                    for rel in &class_def.relationships {
+                        let rel_sum = Expr::Sum {
+                            over: rel.name.clone(),
+                            prop: fn_short.property.clone(),
+                            r#where: None,
+                        };
+                        
+                        sum_expr = Expr::Add {
+                            left: Box::new(sum_expr),
+                            right: Box::new(rel_sum),
+                        };
+                    }
+                    
+                    Some(sum_expr)
+                }
+                _ => None, // Unsupported method
+            }
+        } else {
+            None
+        }
+    }
 }

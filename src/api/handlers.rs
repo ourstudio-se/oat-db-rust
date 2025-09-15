@@ -362,7 +362,7 @@ pub async fn get_openapi_spec<S: Store>(_state: State<AppState<S>>) -> Json<serd
         "info": {
             "title": "OAT Database API",
             "version": "2.0.0",
-            "description": "A git-like combinatorial database API with commit-based access and working-commit staging. **Breaking Change**: All data modifications now require working-commit endpoints.",
+            "description": "A git-like combinatorial database API with commit-based access and working-commit staging. Features include typed properties, conditional properties, **derived properties** (computed fields with expressions), pool resolution, and branch-based version control. **Breaking Change**: All data modifications now require working-commit endpoints.",
             "contact": {
                 "name": "API Support"
             }
@@ -4531,7 +4531,7 @@ pub async fn get_openapi_spec<S: Store>(_state: State<AppState<S>>) -> Json<serd
                             "items": {
                                 "$ref": "#/components/schemas/DerivedDef"
                             },
-                            "description": "Derived property definitions"
+                            "description": "Derived property definitions - computed fields based on expressions that can reference own properties, related instance properties, perform arithmetic operations, aggregations (sum/count), and conditional logic"
                         }
                     }
                 },
@@ -4612,15 +4612,241 @@ pub async fn get_openapi_spec<S: Store>(_state: State<AppState<S>>) -> Json<serd
                 },
                 "DerivedDef": {
                     "type": "object",
+                    "description": "Definition of a derived property that computes values dynamically based on expressions. Can use either a full expression or a shortcut notation.",
+                    "required": ["id", "name", "data_type"],
                     "properties": {
                         "id": {
-                            "type": "string"
+                            "type": "string",
+                            "description": "Unique identifier for this derived property"
                         },
                         "name": {
-                            "type": "string"
+                            "type": "string",
+                            "description": "Property name used to access the computed value"
                         },
                         "data_type": {
-                            "$ref": "#/components/schemas/DataType"
+                            "$ref": "#/components/schemas/DataType",
+                            "description": "Expected data type of the computed result"
+                        },
+                        "expr": {
+                            "$ref": "#/components/schemas/Expr",
+                            "description": "Full expression that defines how to compute this property (mutually exclusive with fn_short)"
+                        },
+                        "fn_short": {
+                            "$ref": "#/components/schemas/FnShort",
+                            "description": "Shortcut notation for common patterns (mutually exclusive with expr)"
+                        }
+                    },
+                    "examples": {
+                        "full_expression": {
+                            "value": {
+                                "id": "der-totalPrice",
+                                "name": "totalPrice",
+                                "data_type": "number",
+                                "expr": {
+                                    "type": "add",
+                                    "left": { "type": "prop", "prop": "basePrice" },
+                                    "right": { "type": "sum", "over": "components", "prop": "price" }
+                                }
+                            }
+                        },
+                        "shortcut": {
+                            "value": {
+                                "id": "der-totalPrice",
+                                "name": "totalPrice",
+                                "data_type": "number",
+                                "fn_short": {
+                                    "method": "sum",
+                                    "property": "price"
+                                }
+                            }
+                        }
+                    }
+                },
+                "FnShort": {
+                    "type": "object",
+                    "description": "Shortcut notation for common derived property patterns",
+                    "required": ["method", "property"],
+                    "properties": {
+                        "method": {
+                            "type": "string",
+                            "description": "The aggregation method to use",
+                            "enum": ["sum"]
+                        },
+                        "property": {
+                            "type": "string",
+                            "description": "The property name to aggregate across the instance and its relationships"
+                        }
+                    },
+                    "example": {
+                        "method": "sum",
+                        "property": "price"
+                    }
+                },
+                "Expr": {
+                    "type": "object",
+                    "description": "Expression language for computing derived property values",
+                    "discriminator": {
+                        "propertyName": "type"
+                    },
+                    "oneOf": [
+                        {
+                            "type": "object",
+                            "required": ["type", "value"],
+                            "properties": {
+                                "type": { "type": "string", "enum": ["lit_number"] },
+                                "value": { "type": "number" }
+                            }
+                        },
+                        {
+                            "type": "object",
+                            "required": ["type", "value"],
+                            "properties": {
+                                "type": { "type": "string", "enum": ["lit_string"] },
+                                "value": { "type": "string" }
+                            }
+                        },
+                        {
+                            "type": "object",
+                            "required": ["type", "value"],
+                            "properties": {
+                                "type": { "type": "string", "enum": ["lit_bool"] },
+                                "value": { "type": "boolean" }
+                            }
+                        },
+                        {
+                            "type": "object",
+                            "required": ["type", "prop"],
+                            "properties": {
+                                "type": { "type": "string", "enum": ["prop"] },
+                                "prop": { "type": "string", "description": "Property name from the instance" }
+                            }
+                        },
+                        {
+                            "type": "object",
+                            "required": ["type", "rel", "prop"],
+                            "properties": {
+                                "type": { "type": "string", "enum": ["rel_prop"] },
+                                "rel": { "type": "string", "description": "Relationship name" },
+                                "prop": { "type": "string", "description": "Property name from related instance" }
+                            }
+                        },
+                        {
+                            "type": "object",
+                            "required": ["type", "left", "right"],
+                            "properties": {
+                                "type": { "type": "string", "enum": ["add"] },
+                                "left": { "$ref": "#/components/schemas/Expr" },
+                                "right": { "$ref": "#/components/schemas/Expr" }
+                            }
+                        },
+                        {
+                            "type": "object",
+                            "required": ["type", "left", "right"],
+                            "properties": {
+                                "type": { "type": "string", "enum": ["sub"] },
+                                "left": { "$ref": "#/components/schemas/Expr" },
+                                "right": { "$ref": "#/components/schemas/Expr" }
+                            }
+                        },
+                        {
+                            "type": "object",
+                            "required": ["type", "left", "right"],
+                            "properties": {
+                                "type": { "type": "string", "enum": ["mul"] },
+                                "left": { "$ref": "#/components/schemas/Expr" },
+                                "right": { "$ref": "#/components/schemas/Expr" }
+                            }
+                        },
+                        {
+                            "type": "object",
+                            "required": ["type", "left", "right"],
+                            "properties": {
+                                "type": { "type": "string", "enum": ["div"] },
+                                "left": { "$ref": "#/components/schemas/Expr" },
+                                "right": { "$ref": "#/components/schemas/Expr" }
+                            }
+                        },
+                        {
+                            "type": "object",
+                            "required": ["type", "over", "prop"],
+                            "properties": {
+                                "type": { "type": "string", "enum": ["sum"] },
+                                "over": { "type": "string", "description": "Relationship name to sum over" },
+                                "prop": { "type": "string", "description": "Property to sum from related instances" },
+                                "where": { "$ref": "#/components/schemas/Expr", "description": "Optional filter condition" }
+                            }
+                        },
+                        {
+                            "type": "object",
+                            "required": ["type", "over"],
+                            "properties": {
+                                "type": { "type": "string", "enum": ["count"] },
+                                "over": { "type": "string", "description": "Relationship name to count" },
+                                "where": { "$ref": "#/components/schemas/Expr", "description": "Optional filter condition" }
+                            }
+                        },
+                        {
+                            "type": "object",
+                            "required": ["type", "condition", "then", "else"],
+                            "properties": {
+                                "type": { "type": "string", "enum": ["if"] },
+                                "condition": { "$ref": "#/components/schemas/Expr", "description": "Boolean condition" },
+                                "then": { "$ref": "#/components/schemas/Expr", "description": "Expression if condition is true" },
+                                "else": { "$ref": "#/components/schemas/Expr", "description": "Expression if condition is false" }
+                            }
+                        },
+                        {
+                            "type": "object",
+                            "required": ["type", "left", "right"],
+                            "properties": {
+                                "type": { "type": "string", "enum": ["gt"] },
+                                "left": { "$ref": "#/components/schemas/Expr" },
+                                "right": { "$ref": "#/components/schemas/Expr" }
+                            }
+                        },
+                        {
+                            "type": "object",
+                            "required": ["type", "left", "right"],
+                            "properties": {
+                                "type": { "type": "string", "enum": ["lt"] },
+                                "left": { "$ref": "#/components/schemas/Expr" },
+                                "right": { "$ref": "#/components/schemas/Expr" }
+                            }
+                        },
+                        {
+                            "type": "object",
+                            "required": ["type", "left", "right"],
+                            "properties": {
+                                "type": { "type": "string", "enum": ["eq"] },
+                                "left": { "$ref": "#/components/schemas/Expr" },
+                                "right": { "$ref": "#/components/schemas/Expr" }
+                            }
+                        }
+                    ],
+                    "examples": {
+                        "simple_addition": {
+                            "type": "add",
+                            "left": { "type": "prop", "prop": "basePrice" },
+                            "right": { "type": "lit_number", "value": 50 }
+                        },
+                        "sum_aggregation": {
+                            "type": "sum",
+                            "over": "components",
+                            "prop": "price"
+                        },
+                        "conditional_discount": {
+                            "type": "if",
+                            "condition": {
+                                "type": "gt",
+                                "left": { "type": "prop", "prop": "quantity" },
+                                "right": { "type": "lit_number", "value": 10 }
+                            },
+                            "then": {
+                                "type": "mul",
+                                "left": { "type": "prop", "prop": "price" },
+                                "right": { "type": "lit_number", "value": 0.9 }
+                            },
+                            "else": { "type": "prop", "prop": "price" }
                         }
                     }
                 },
@@ -5436,6 +5662,14 @@ pub async fn get_openapi_spec<S: Store>(_state: State<AppState<S>>) -> Json<serd
                             "$ref": "#/components/schemas/ResolutionContextMetadata",
                             "nullable": true,
                             "description": "Optional metadata for the resolution context"
+                        },
+                        "derived_properties": {
+                            "type": "array",
+                            "items": {
+                                "type": "string"
+                            },
+                            "nullable": true,
+                            "description": "Optional list of derived property names to include in the response"
                         }
                     }
                 },
@@ -6938,12 +7172,18 @@ pub async fn list_branches<S: Store + CommitStore + TagStore + WorkingCommitStor
                 };
 
                 // Check for merge working commits on this branch
-                let merge_status = match store.list_working_commits_for_branch(&db_id, &branch.name).await {
+                let merge_status = match store
+                    .list_working_commits_for_branch(&db_id, &branch.name)
+                    .await
+                {
                     Ok(working_commits) => {
                         // Find merge working commit
                         working_commits
                             .into_iter()
-                            .find(|wc| wc.status == crate::model::WorkingCommitStatus::Merging && wc.merge_state.is_some())
+                            .find(|wc| {
+                                wc.status == crate::model::WorkingCommitStatus::Merging
+                                    && wc.merge_state.is_some()
+                            })
                             .and_then(|wc| {
                                 wc.merge_state.as_ref().map(|merge_state| MergeStatusInfo {
                                     working_commit_id: wc.id.clone(),
@@ -7028,12 +7268,18 @@ pub async fn get_branch<S: Store + CommitStore + TagStore + WorkingCommitStore>(
             };
 
             // Check for merge working commits on this branch
-            let merge_status = match store.list_working_commits_for_branch(&db_id, &branch.name).await {
+            let merge_status = match store
+                .list_working_commits_for_branch(&db_id, &branch.name)
+                .await
+            {
                 Ok(working_commits) => {
                     // Find merge working commit
                     working_commits
                         .into_iter()
-                        .find(|wc| wc.status == crate::model::WorkingCommitStatus::Merging && wc.merge_state.is_some())
+                        .find(|wc| {
+                            wc.status == crate::model::WorkingCommitStatus::Merging
+                                && wc.merge_state.is_some()
+                        })
                         .and_then(|wc| {
                             wc.merge_state.as_ref().map(|merge_state| MergeStatusInfo {
                                 working_commit_id: wc.id.clone(),
@@ -7288,52 +7534,50 @@ pub async fn list_instances<S: Store>(
         limit: None,
     });
 
-    match store
-        .list_instances_for_branch(&db_id, &branch_name, filter)
+    // Get working_commit for this branch
+    let working_commit = match store
+        .get_active_working_commit_for_branch(&db_id, &branch_name)
         .await
     {
-        Ok(instances) => {
-            let expand_rels = query
-                .expand
-                .as_ref()
-                .map(|s| s.split(',').map(|s| s.to_string()).collect::<Vec<_>>())
-                .unwrap_or_default();
-
-            let depth = query.depth.unwrap_or(0);
-            let mut expanded_instances = Vec::new();
-
-            for instance in instances {
-                match Expander::expand_instance_with_branch(
-                    &*store,
-                    &instance,
-                    &expand_rels,
-                    depth,
-                    &db_id,
-                    Some(&branch_name),
-                )
-                .await
-                {
-                    Ok(expanded) => expanded_instances.push(expanded),
-                    Err(e) => {
-                        return Err((
-                            StatusCode::INTERNAL_SERVER_ERROR,
-                            Json(ErrorResponse::new(&e.to_string())),
-                        ))
-                    }
-                }
-            }
-
-            let total = expanded_instances.len();
-            Ok(Json(ListResponse {
-                items: expanded_instances,
-                total,
-            }))
+        Ok(Some(commit)) => commit,
+        Ok(None) => {
+            return Err((
+                StatusCode::NOT_FOUND,
+                Json(ErrorResponse::new(
+                    "No active working commit found for this branch",
+                )),
+            ))
         }
-        Err(e) => Err((
-            StatusCode::INTERNAL_SERVER_ERROR,
-            Json(ErrorResponse::new(&e.to_string())),
-        )),
+        Err(e) => {
+            return Err((
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(ErrorResponse::new(&e.to_string())),
+            ))
+        }
+    };
+
+    let mut expanded_instances = Vec::new();
+    let instances = working_commit.instances_data.clone();
+    let schema = working_commit.schema_data.clone();
+
+    let instances_vec = instances.clone(); // Clone instances to avoid consuming them
+    for instance in instances {
+        match Expander::expand_instance(&instance, &instances_vec, &schema).await {
+            Ok(expanded) => expanded_instances.push(expanded),
+            Err(e) => {
+                return Err((
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    Json(ErrorResponse::new(&e.to_string())),
+                ))
+            }
+        }
     }
+
+    let total = expanded_instances.len();
+    Ok(Json(ListResponse {
+        items: expanded_instances,
+        total,
+    }))
 }
 
 pub async fn get_instance<S: Store>(
@@ -7346,49 +7590,42 @@ pub async fn get_instance<S: Store>(
         Err(error_response) => return Err(error_response),
     };
 
-    match store.get_instance(&db_id, &branch_name, &id).await {
-        Ok(Some(instance)) => {
-            // Always expand by default
-            let should_expand = true;
-
-            if should_expand {
-                let expand_rels = query
-                    .expand
-                    .as_ref()
-                    .map(|s| s.split(',').map(|s| s.to_string()).collect::<Vec<_>>())
-                    .unwrap_or_default();
-
-                let depth = query.depth.unwrap_or(0);
-
-                match Expander::expand_instance_with_branch(
-                    &*store,
-                    &instance,
-                    &expand_rels,
-                    depth,
-                    &db_id,
-                    Some(&branch_name),
-                )
-                .await
-                {
-                    Ok(expanded) => Ok(Json(InstanceResponse::Expanded(expanded))),
-                    Err(e) => {
-                        return Err((
-                            StatusCode::INTERNAL_SERVER_ERROR,
-                            Json(ErrorResponse::new(&e.to_string())),
-                        ))
-                    }
-                }
-            } else {
-                // Return raw instance without expansion
-                Ok(Json(InstanceResponse::Raw(instance)))
-            }
-        }
+    // First get working commit for this branch
+    let working_commit = match store
+        .get_active_working_commit_for_branch(&db_id, &branch_name)
+        .await
+    {
+        Ok(Some(commit)) => commit,
         Ok(None) => {
             return Err((
                 StatusCode::NOT_FOUND,
-                Json(ErrorResponse::new("Instance not found")),
+                Json(ErrorResponse::new(
+                    "No active working commit found for this branch",
+                )),
             ))
         }
+        Err(e) => {
+            return Err((
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(ErrorResponse::new(&e.to_string())),
+            ))
+        }
+    };
+
+    let instances = working_commit.instances_data.clone();
+    let schema = working_commit.schema_data.clone();
+    // Find the instance first without consuming the instances vector
+    let instance = match instances.iter().find(|inst| inst.id == id) {
+        Some(inst) => inst.clone(),
+        None => {
+            return Err((
+                StatusCode::NOT_FOUND,
+                Json(ErrorResponse::new("Instance not found in working commit")),
+            ))
+        }
+    };
+    match Expander::expand_instance(&instance, &instances, &schema).await {
+        Ok(expanded) => Ok(Json(InstanceResponse::Expanded(expanded))),
         Err(e) => {
             return Err((
                 StatusCode::INTERNAL_SERVER_ERROR,
@@ -7653,59 +7890,19 @@ pub async fn list_database_instances<S: Store>(
         limit: None,
     });
 
-    match store
-        .list_instances_for_branch(&db_id, &main_branch_name, filter)
+    // Get the working commit for the main branch
+    let working_commit = match store
+        .get_active_working_commit_for_branch(&db_id, &main_branch_name)
         .await
     {
-        Ok(instances) => {
-            // Always expand by default
-            let should_expand = true;
-
-            let mut instance_responses = Vec::new();
-
-            if should_expand {
-                let expand_rels = query
-                    .expand
-                    .as_ref()
-                    .map(|s| s.split(',').map(|s| s.to_string()).collect::<Vec<_>>())
-                    .unwrap_or_default();
-
-                let depth = query.depth.unwrap_or(0);
-
-                for instance in instances {
-                    match Expander::expand_instance_with_branch(
-                        &*store,
-                        &instance,
-                        &expand_rels,
-                        depth,
-                        &db_id,
-                        Some(&main_branch_name),
-                    )
-                    .await
-                    {
-                        Ok(expanded) => {
-                            instance_responses.push(InstanceResponse::Expanded(expanded))
-                        }
-                        Err(e) => {
-                            return Err((
-                                StatusCode::INTERNAL_SERVER_ERROR,
-                                Json(ErrorResponse::new(&e.to_string())),
-                            ))
-                        }
-                    }
-                }
-            } else {
-                // Return raw instances by default (consistent with get_database_instance)
-                for instance in instances {
-                    instance_responses.push(InstanceResponse::Raw(instance));
-                }
-            }
-
-            let total = instance_responses.len();
-            Ok(Json(ListResponse {
-                items: instance_responses,
-                total,
-            }))
+        Ok(Some(commit)) => commit,
+        Ok(None) => {
+            return Err((
+                StatusCode::NOT_FOUND,
+                Json(ErrorResponse::new(
+                    "No active working commit found for the main branch",
+                )),
+            ))
         }
         Err(e) => {
             return Err((
@@ -7713,7 +7910,27 @@ pub async fn list_database_instances<S: Store>(
                 Json(ErrorResponse::new(&e.to_string())),
             ))
         }
+    };
+    let instances = working_commit.instances_data.clone();
+    let schema = working_commit.schema_data.clone();
+    let mut instance_responses = Vec::new();
+    for instance in instances.clone() {
+        match Expander::expand_instance(&instance, &instances, &schema).await {
+            Ok(expanded) => instance_responses.push(InstanceResponse::Expanded(expanded)),
+            Err(e) => {
+                return Err((
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    Json(ErrorResponse::new(&e.to_string())),
+                ))
+            }
+        }
     }
+
+    let total = instance_responses.len();
+    Ok(Json(ListResponse {
+        items: instance_responses,
+        total,
+    }))
 }
 
 pub async fn get_database_instance<S: Store>(
@@ -7722,50 +7939,41 @@ pub async fn get_database_instance<S: Store>(
     Query(query): Query<ExpandQuery>,
 ) -> Result<Json<InstanceResponse>, (StatusCode, Json<ErrorResponse>)> {
     let main_branch_name = get_main_branch_name(&*store, &db_id).await?;
-
-    match store.get_instance(&db_id, &main_branch_name, &id).await {
-        Ok(Some(instance)) => {
-            // Always expand by default
-            let should_expand = true;
-
-            if should_expand {
-                let expand_rels = query
-                    .expand
-                    .as_ref()
-                    .map(|s| s.split(',').map(|s| s.to_string()).collect::<Vec<_>>())
-                    .unwrap_or_default();
-
-                let depth = query.depth.unwrap_or(0);
-
-                match Expander::expand_instance_with_branch(
-                    &*store,
-                    &instance,
-                    &expand_rels,
-                    depth,
-                    &db_id,
-                    Some(&main_branch_name),
-                )
-                .await
-                {
-                    Ok(expanded) => Ok(Json(InstanceResponse::Expanded(expanded))),
-                    Err(e) => {
-                        return Err((
-                            StatusCode::INTERNAL_SERVER_ERROR,
-                            Json(ErrorResponse::new(&e.to_string())),
-                        ))
-                    }
-                }
-            } else {
-                // Return raw instance without expansion
-                Ok(Json(InstanceResponse::Raw(instance)))
-            }
-        }
+    let working_commit = match store
+        .get_active_working_commit_for_branch(&db_id, &main_branch_name)
+        .await
+    {
+        Ok(Some(commit)) => commit,
         Ok(None) => {
             return Err((
                 StatusCode::NOT_FOUND,
-                Json(ErrorResponse::new("Instance not found")),
+                Json(ErrorResponse::new(
+                    "No active working commit found for the main branch",
+                )),
             ))
         }
+        Err(e) => {
+            return Err((
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(ErrorResponse::new(&e.to_string())),
+            ))
+        }
+    };
+    let instances = working_commit.instances_data.clone();
+    let schema = working_commit.schema_data.clone();
+    match Expander::expand_instance(
+        &*instances.iter().find(|inst| inst.id == id).ok_or_else(|| {
+            (
+                StatusCode::NOT_FOUND,
+                Json(ErrorResponse::new("Instance not found in working commit")),
+            )
+        })?,
+        &instances,
+        &schema,
+    )
+    .await
+    {
+        Ok(expanded) => Ok(Json(InstanceResponse::Expanded(expanded))),
         Err(e) => {
             return Err((
                 StatusCode::INTERNAL_SERVER_ERROR,
@@ -9287,10 +9495,7 @@ async fn enhance_working_commit_response_with_resolved_relationships<S: Store>(
                                         {
                                             // Resolve the relationship using working commit context
                                             match resolve_selection_with_working_commit_context(
-                                                store,
                                                 &original_selection,
-                                                db_id,
-                                                branch_name,
                                                 working_commit,
                                             )
                                             .await
@@ -9351,10 +9556,7 @@ async fn enhance_working_commit_response_with_resolved_relationships<S: Store>(
                                 {
                                     // Resolve the relationship using working commit context
                                     match resolve_selection_with_working_commit_context(
-                                        store,
                                         &original_selection,
-                                        db_id,
-                                        branch_name,
                                         working_commit,
                                     )
                                     .await
@@ -9408,10 +9610,7 @@ async fn enhance_working_commit_response_with_resolved_relationships<S: Store>(
 
                                                 // Resolve the default pool relationship
                                                 match resolve_selection_with_working_commit_context(
-                                                    store,
                                                     &default_selection,
-                                                    db_id,
-                                                    branch_name,
                                                     working_commit,
                                                 )
                                                 .await
@@ -10515,10 +10714,7 @@ pub async fn get_working_commit_resolved<S: WorkingCommitStore + Store>(
                                         {
                                             // Resolve the relationship using working commit context
                                             match resolve_selection_with_working_commit_context(
-                                                &*store,
                                                 &original_selection,
-                                                &db_id,
-                                                &branch_name,
                                                 &working_commit,
                                             )
                                             .await
@@ -10552,6 +10748,10 @@ pub async fn get_working_commit_resolved<S: WorkingCommitStore + Store>(
                                 // Also check class schema for relationships with default pools that aren't explicitly configured
                                 if let Some(instance_class) = instance_obj.get("class") {
                                     if let Some(class_id_str) = instance_class.as_str() {
+                                        eprintln!(
+                                            "DEBUG: Processing class {} for instance",
+                                            class_id_str
+                                        );
                                         // Get the class definition from the working commit schema
                                         if let Some(class_def) = working_commit
                                             .schema_data
@@ -10559,8 +10759,13 @@ pub async fn get_working_commit_resolved<S: WorkingCommitStore + Store>(
                                             .iter()
                                             .find(|c| c.id == class_id_str)
                                         {
+                                            eprintln!(
+                                                "DEBUG: Found class definition for {}",
+                                                class_id_str
+                                            );
                                             for rel_def in &class_def.relationships {
                                                 let rel_name = &rel_def.id;
+                                                eprintln!("DEBUG: Checking relationship {} with default pool: {:?}", rel_name, rel_def.default_pool);
 
                                                 // Only process if this relationship isn't already in enhanced_rels (i.e., not explicitly configured on instance)
                                                 if !enhanced_rels.contains_key(rel_name) {
@@ -10574,10 +10779,7 @@ pub async fn get_working_commit_resolved<S: WorkingCommitStore + Store>(
 
                                                         // Resolve the default pool relationship
                                                         match resolve_selection_with_working_commit_context(
-                                                            &*store,
                                                             &default_selection,
-                                                            &db_id,
-                                                            &branch_name,
                                                             &working_commit,
                                                         ).await {
                                                             Ok(resolved_rel) => {
@@ -10637,7 +10839,7 @@ pub async fn get_working_commit_resolved<S: WorkingCommitStore + Store>(
     }
 }
 
-                                    // Parse the original selection
+// Parse the original selection
 
 /// Expand relationships in working commit instances and create enhanced response
 async fn expand_working_commit_relationships<S: Store>(
@@ -10647,6 +10849,8 @@ async fn expand_working_commit_relationships<S: Store>(
     branch_name: &str,
 ) -> anyhow::Result<WorkingCommitResponse> {
     let mut enhanced_instances = Vec::new();
+    let other_instances = working_commit.instances_data.clone();
+    let schema = &working_commit.schema_data;
 
     // Process each instance in the working commit
     for instance in &working_commit.instances_data {
@@ -10670,10 +10874,8 @@ async fn expand_working_commit_relationships<S: Store>(
         for (rel_name, original_selection) in &instance.relationships {
             // Resolve the relationship to get materialized IDs
             let resolved_rel = Expander::resolve_selection_enhanced_with_branch(
-                store,
+                &other_instances,
                 original_selection,
-                database_id,
-                Some(branch_name),
             )
             .await?;
 
@@ -10687,13 +10889,9 @@ async fn expand_working_commit_relationships<S: Store>(
         }
 
         // Also add schema default relationships that aren't explicitly set
-        let schema_resolved_rels = Expander::resolve_all_relationships_from_schema(
-            store,
-            instance,
-            database_id,
-            branch_name,
-        )
-        .await?;
+        let schema_resolved_rels =
+            Expander::resolve_all_relationships_from_schema(instance, schema, &other_instances)
+                .await?;
 
         for (schema_rel_name, schema_resolved_rel) in schema_resolved_rels {
             if !enhanced_relationships.contains_key(&schema_rel_name) {
@@ -10735,127 +10933,9 @@ async fn expand_working_commit_relationships<S: Store>(
     })
 }
 
-/// Expand relationships in working commit changes and create enhanced response
-async fn expand_changes_relationships<S: Store>(
-    store: &S,
-    changes: crate::model::WorkingCommitChanges,
-    database_id: &Id,
-    branch_name: &str,
-) -> anyhow::Result<WorkingCommitChangesResponse> {
-    // Helper function to convert Instance to WorkingCommitInstance with expanded relationships
-    async fn expand_instance<S: Store>(
-        store: &S,
-        instance: &crate::model::Instance,
-        database_id: &Id,
-        branch_name: &str,
-    ) -> anyhow::Result<WorkingCommitInstance> {
-        // Expand properties (literal and conditional)
-        let mut expanded_props = std::collections::HashMap::new();
-        for (key, prop_value) in &instance.properties {
-            match prop_value {
-                PropertyValue::Literal(typed_value) => {
-                    expanded_props.insert(key.clone(), typed_value.value.clone());
-                }
-                PropertyValue::Conditional(rule_set) => {
-                    let value =
-                        crate::logic::SimpleEvaluator::evaluate_rule_set(rule_set, instance);
-                    expanded_props.insert(key.clone(), value);
-                }
-            }
-        }
-
-        // Process relationships: preserve original + add resolved data
-        let mut enhanced_relationships = std::collections::HashMap::new();
-        for (rel_name, original_selection) in &instance.relationships {
-            // Resolve the relationship to get materialized IDs
-            let resolved_rel = Expander::resolve_selection_enhanced_with_branch(
-                store,
-                original_selection,
-                database_id,
-                Some(branch_name),
-            )
-            .await?;
-
-            enhanced_relationships.insert(
-                rel_name.clone(),
-                WorkingCommitRelationship {
-                    original: original_selection.clone(),
-                    resolved: resolved_rel,
-                },
-            );
-        }
-
-        // Also add schema default relationships that aren't explicitly set
-        let schema_resolved_rels = Expander::resolve_all_relationships_from_schema(
-            store,
-            instance,
-            database_id,
-            branch_name,
-        )
-        .await?;
-
-        for (schema_rel_name, schema_resolved_rel) in schema_resolved_rels {
-            if !enhanced_relationships.contains_key(&schema_rel_name) {
-                // Create a "default" RelationshipSelection to represent schema defaults
-                let default_selection = RelationshipSelection::All; // Represents schema default behavior
-                enhanced_relationships.insert(
-                    schema_rel_name,
-                    WorkingCommitRelationship {
-                        original: default_selection,
-                        resolved: schema_resolved_rel,
-                    },
-                );
-            }
-        }
-
-        Ok(WorkingCommitInstance {
-            id: instance.id.clone(),
-            class: instance.class_id.clone(),
-            properties: expanded_props,
-            relationships: enhanced_relationships,
-            created_by: instance.created_by.clone(),
-            created_at: instance.created_at,
-            updated_by: instance.updated_by.clone(),
-            updated_at: instance.updated_at,
-        })
-    }
-
-    // Expand added instances
-    let mut enhanced_added = Vec::new();
-    for instance in &changes.instance_changes.added {
-        enhanced_added.push(expand_instance(store, instance, database_id, branch_name).await?);
-    }
-
-    // Expand modified instances
-    let mut enhanced_modified = Vec::new();
-    for instance in &changes.instance_changes.modified {
-        enhanced_modified.push(expand_instance(store, instance, database_id, branch_name).await?);
-    }
-
-    Ok(WorkingCommitChangesResponse {
-        id: changes.id,
-        database_id: changes.database_id,
-        branch_name: changes.branch_name,
-        based_on_hash: Some(changes.based_on_hash.clone()),
-        author: changes.author,
-        created_at: changes.created_at,
-        updated_at: changes.updated_at,
-        status: changes.status,
-        schema_changes: changes.schema_changes,
-        instance_changes: EnhancedInstanceChanges {
-            added: enhanced_added,
-            modified: enhanced_modified,
-            deleted: changes.instance_changes.deleted,
-        },
-    })
-}
-
 /// Resolve relationship selection using working commit context (includes working commit instances)
-async fn resolve_selection_with_working_commit_context<S: Store>(
-    store: &S,
+async fn resolve_selection_with_working_commit_context(
     selection: &RelationshipSelection,
-    database_id: &Id,
-    branch_name: &str,
     working_commit: &WorkingCommit,
 ) -> anyhow::Result<crate::model::ResolvedRelationship> {
     use std::time::Instant;
@@ -10944,14 +11024,11 @@ async fn resolve_selection_with_working_commit_context<S: Store>(
             }
         }
         _ => {
+            // Get instances and schema from working_commit
+            let instances = working_commit.instances_data.clone();
+            let schema = working_commit.schema_data.clone();
             // For other types, fall back to the standard resolution
-            Expander::resolve_selection_enhanced_with_branch(
-                store,
-                selection,
-                database_id,
-                Some(branch_name),
-            )
-            .await
+            Expander::resolve_selection_enhanced_with_branch(&instances, selection).await
         }
     }
 }
@@ -10961,21 +11038,54 @@ fn resolve_pool_filter_with_working_commit(
     filter: &crate::model::InstanceFilter,
     working_commit: &WorkingCommit,
 ) -> anyhow::Result<Vec<Id>> {
+    eprintln!(
+        "DEBUG: resolve_pool_filter_with_working_commit called with filter: {:?}",
+        filter
+    );
+    eprintln!(
+        "DEBUG: Working commit has {} instances",
+        working_commit.instances_data.len()
+    );
+
+    // Debug: List all instances in working commit
+    for inst in &working_commit.instances_data {
+        eprintln!(
+            "DEBUG: Working commit instance: {} of type {}",
+            inst.id, inst.class_id
+        );
+    }
+
     if let Some(types) = &filter.types {
         let mut matching_instances = Vec::new();
 
         // Search through working commit instances instead of branch instances
         for target_type in types {
+            eprintln!("DEBUG: Looking for instances of type: {}", target_type);
             for instance in &working_commit.instances_data {
                 if instance.class_id == *target_type {
+                    eprintln!(
+                        "DEBUG: Found matching instance: {} of type {}",
+                        instance.id, instance.class_id
+                    );
                     matching_instances.push(instance.clone());
                 }
             }
         }
+        eprintln!(
+            "DEBUG: Total matching instances before filtering: {}",
+            matching_instances.len()
+        );
 
         // Apply where_clause filters if present using our unified filtering system
         if let Some(where_clause) = &filter.where_clause {
+            eprintln!("DEBUG: Applying where_clause filter: {:?}", where_clause);
+            let before_filter = matching_instances.len();
             matching_instances = crate::logic::filter_instances(matching_instances, where_clause);
+            eprintln!(
+                "DEBUG: After where_clause filter: {} instances (filtered out {})",
+                matching_instances.len(),
+                before_filter - matching_instances.len()
+            );
         }
 
         // Apply sorting if present (similar to expand.rs implementation)
@@ -11004,11 +11114,15 @@ fn resolve_pool_filter_with_working_commit(
 
         // Apply limit if present
         if let Some(limit) = filter.limit {
+            eprintln!("DEBUG: Applying limit: {}", limit);
             matching_instances.truncate(limit);
         }
 
-        Ok(matching_instances.into_iter().map(|i| i.id).collect())
+        let result: Vec<Id> = matching_instances.into_iter().map(|i| i.id).collect();
+        eprintln!("DEBUG: Final result IDs: {:?}", result);
+        Ok(result)
     } else {
+        eprintln!("DEBUG: No types specified in filter, returning empty");
         Ok(Vec::new())
     }
 }
@@ -11805,27 +11919,33 @@ pub async fn get_working_commit_schema<S: WorkingCommitStore + Store + BranchSto
             .map_err(|e| {
                 (
                     StatusCode::INTERNAL_SERVER_ERROR,
-                    Json(ErrorResponse::new(&format!("Failed to get schema changes: {}", e))),
+                    Json(ErrorResponse::new(&format!(
+                        "Failed to get schema changes: {}",
+                        e
+                    ))),
                 )
             })?;
         Ok(Json(serde_json::to_value(changes.schema_changes).unwrap()))
     } else {
         // Create a custom serialized version where the "value" field is always present
         let mut schema_json = serde_json::to_value(&working_commit.schema_data).unwrap();
-        
+
         // Ensure all PropertyDef objects have a "value" field, even if it's null
         if let Some(classes) = schema_json["classes"].as_array_mut() {
             for class in classes {
                 if let Some(properties) = class["properties"].as_array_mut() {
                     for property in properties {
                         if !property.as_object().unwrap().contains_key("value") {
-                            property.as_object_mut().unwrap().insert("value".to_string(), serde_json::Value::Null);
+                            property
+                                .as_object_mut()
+                                .unwrap()
+                                .insert("value".to_string(), serde_json::Value::Null);
                         }
                     }
                 }
             }
         }
-        
+
         Ok(Json(schema_json))
     }
 }
@@ -11850,24 +11970,35 @@ pub async fn get_working_commit_class<S: WorkingCommitStore + Store + BranchStor
         })?;
 
     // Find the class in the working commit schema
-    if let Some(class_def) = working_commit.schema_data.classes.iter().find(|c| c.id == class_id) {
+    if let Some(class_def) = working_commit
+        .schema_data
+        .classes
+        .iter()
+        .find(|c| c.id == class_id)
+    {
         // Create a custom serialized version where the "value" field is always present
         let mut class_json = serde_json::to_value(class_def).unwrap();
-        
+
         // Ensure all PropertyDef objects have a "value" field, even if it's null
         if let Some(properties) = class_json["properties"].as_array_mut() {
             for property in properties {
                 if !property.as_object().unwrap().contains_key("value") {
-                    property.as_object_mut().unwrap().insert("value".to_string(), serde_json::Value::Null);
+                    property
+                        .as_object_mut()
+                        .unwrap()
+                        .insert("value".to_string(), serde_json::Value::Null);
                 }
             }
         }
-        
+
         Ok(Json(class_json))
     } else {
         Err((
             StatusCode::NOT_FOUND,
-            Json(ErrorResponse::new(&format!("Class '{}' not found in working commit", class_id))),
+            Json(ErrorResponse::new(&format!(
+                "Class '{}' not found in working commit",
+                class_id
+            ))),
         ))
     }
 }
@@ -11901,37 +12032,31 @@ pub async fn list_working_commit_instances<S: WorkingCommitStore + Store + Branc
             .map_err(|e| {
                 (
                     StatusCode::INTERNAL_SERVER_ERROR,
-                    Json(ErrorResponse::new(&format!("Failed to get instance changes: {}", e))),
+                    Json(ErrorResponse::new(&format!(
+                        "Failed to get instance changes: {}",
+                        e
+                    ))),
                 )
             })?;
-        Ok(Json(serde_json::to_value(changes.instance_changes).unwrap()))
+        Ok(Json(
+            serde_json::to_value(changes.instance_changes).unwrap(),
+        ))
     } else {
         // Filter instances by class if specified
         let mut instances = working_commit.instances_data.clone();
         if let Some(class_id) = query.class_id {
-            instances = instances.into_iter().filter(|i| i.class_id == class_id).collect();
+            instances = instances
+                .into_iter()
+                .filter(|i| i.class_id == class_id)
+                .collect();
         }
-
-        // Support expansion like regular instances endpoint
-        let expand_rels = query
-            .expand
-            .as_ref()
-            .map(|s| s.split(',').map(|s| s.to_string()).collect::<Vec<_>>())
-            .unwrap_or_default();
-        let depth = query.depth.unwrap_or(0);
         let mut expanded_instances = Vec::new();
 
-        for instance in instances {
-            match Expander::expand_instance_with_branch(
-                &*store,
-                &instance,
-                &expand_rels,
-                depth,
-                &db_id,
-                Some(&branch_name),
-            )
-            .await
-            {
+        // Get schema for expansion
+        let schema = working_commit.schema_data.clone();
+
+        for instance in &instances {
+            match Expander::expand_instance(instance, &instances, &schema).await {
                 Ok(expanded) => expanded_instances.push(expanded),
                 Err(e) => {
                     return Err((
@@ -11943,10 +12068,13 @@ pub async fn list_working_commit_instances<S: WorkingCommitStore + Store + Branc
         }
 
         let total = expanded_instances.len();
-        Ok(Json(serde_json::to_value(ListResponse {
-            items: expanded_instances,
-            total,
-        }).unwrap()))
+        Ok(Json(
+            serde_json::to_value(ListResponse {
+                items: expanded_instances,
+                total,
+            })
+            .unwrap(),
+        ))
     }
 }
 
@@ -11956,7 +12084,7 @@ pub async fn get_working_commit_instance<S: WorkingCommitStore + Store + BranchS
     Path((db_id, branch_name, instance_id)): Path<(Id, String, Id)>,
     Query(query): Query<ExpandQuery>,
 ) -> Result<Json<serde_json::Value>, (StatusCode, Json<ErrorResponse>)> {
-    // Verify branch belongs to database  
+    // Verify branch belongs to database
     if let Err(e) = verify_branch_exists(&*store, &db_id, &branch_name).await {
         return Err(e);
     }
@@ -11970,8 +12098,16 @@ pub async fn get_working_commit_instance<S: WorkingCommitStore + Store + BranchS
             )
         })?;
 
+    // Get schema and instances from working_commit for expansion
+    let schema = working_commit.schema_data.clone();
+    let instances = working_commit.instances_data.clone();
+
     // Find the instance in the working commit
-    if let Some(instance) = working_commit.instances_data.iter().find(|i| i.id == instance_id) {
+    if let Some(instance) = working_commit
+        .instances_data
+        .iter()
+        .find(|i| i.id == instance_id)
+    {
         // Support expansion like regular instance endpoint
         let expand_rels = query
             .expand
@@ -11980,16 +12116,7 @@ pub async fn get_working_commit_instance<S: WorkingCommitStore + Store + BranchS
             .unwrap_or_default();
         let depth = query.depth.unwrap_or(0);
 
-        match Expander::expand_instance_with_branch(
-            &*store,
-            instance,
-            &expand_rels,
-            depth,
-            &db_id,
-            Some(&branch_name),
-        )
-        .await
-        {
+        match Expander::expand_instance(instance, &instances, &schema).await {
             Ok(expanded) => Ok(Json(serde_json::to_value(expanded).unwrap())),
             Err(e) => Err((
                 StatusCode::INTERNAL_SERVER_ERROR,
@@ -11999,19 +12126,29 @@ pub async fn get_working_commit_instance<S: WorkingCommitStore + Store + BranchS
     } else {
         Err((
             StatusCode::NOT_FOUND,
-            Json(ErrorResponse::new(&format!("Instance '{}' not found in working commit", instance_id))),
+            Json(ErrorResponse::new(&format!(
+                "Instance '{}' not found in working commit",
+                instance_id
+            ))),
         ))
     }
 }
 
 /// Query working commit instance configuration (POST) - delegates to existing batch query  
-pub async fn query_working_commit_instance_configuration<S: WorkingCommitStore + Store + BranchStore>(
+pub async fn query_working_commit_instance_configuration<
+    S: WorkingCommitStore + Store + BranchStore,
+>(
     State(store): State<AppState<S>>,
     Path((db_id, branch_name, instance_id)): Path<(Id, String, Id)>,
     RequestJson(request): RequestJson<BatchInstanceQueryRequest>,
 ) -> Result<Json<BatchQueryResponse>, (StatusCode, Json<ErrorResponse>)> {
     // Delegate to existing batch query handler
-    batch_query_working_commit_instance_configuration(State(store), Path((db_id, branch_name, instance_id)), RequestJson(request)).await
+    batch_query_working_commit_instance_configuration(
+        State(store),
+        Path((db_id, branch_name, instance_id)),
+        RequestJson(request),
+    )
+    .await
 }
 
 /// Query working commit instance configuration (GET) - simplified version
@@ -12022,7 +12159,15 @@ pub async fn get_working_commit_instance_query<S: WorkingCommitStore + Store + B
 ) -> Result<Json<serde_json::Value>, (StatusCode, Json<ErrorResponse>)> {
     // For GET requests, we'll return basic instance data instead of complex query results
     // No expansion for this endpoint
-    get_working_commit_instance(State(store), Path((db_id, branch_name, instance_id)), Query(ExpandQuery { expand: None, depth: None })).await
+    get_working_commit_instance(
+        State(store),
+        Path((db_id, branch_name, instance_id)),
+        Query(ExpandQuery {
+            expand: None,
+            depth: None,
+        }),
+    )
+    .await
 }
 
 // ============================================================================
@@ -12040,7 +12185,9 @@ pub async fn get_default_branch_working_commit<S: WorkingCommitStore + Store + B
 }
 
 /// Get default branch working commit schema
-pub async fn get_default_branch_working_commit_schema<S: WorkingCommitStore + Store + BranchStore>(
+pub async fn get_default_branch_working_commit_schema<
+    S: WorkingCommitStore + Store + BranchStore,
+>(
     State(store): State<AppState<S>>,
     Path(db_id): Path<Id>,
     Query(query): Query<WorkingCommitQuery>,
@@ -12050,7 +12197,9 @@ pub async fn get_default_branch_working_commit_schema<S: WorkingCommitStore + St
 }
 
 /// Get default branch working commit class
-pub async fn get_default_branch_working_commit_class<S: WorkingCommitStore + Store + BranchStore>(
+pub async fn get_default_branch_working_commit_class<
+    S: WorkingCommitStore + Store + BranchStore,
+>(
     State(store): State<AppState<S>>,
     Path((db_id, class_id)): Path<(Id, Id)>,
 ) -> Result<Json<serde_json::Value>, (StatusCode, Json<ErrorResponse>)> {
@@ -12059,44 +12208,73 @@ pub async fn get_default_branch_working_commit_class<S: WorkingCommitStore + Sto
 }
 
 /// List default branch working commit instances
-pub async fn list_default_branch_working_commit_instances<S: WorkingCommitStore + Store + BranchStore>(
+pub async fn list_default_branch_working_commit_instances<
+    S: WorkingCommitStore + Store + BranchStore,
+>(
     State(store): State<AppState<S>>,
     Path(db_id): Path<Id>,
     Query(query): Query<InstanceQuery>,
     Query(wc_query): Query<WorkingCommitQuery>,
 ) -> Result<Json<serde_json::Value>, (StatusCode, Json<ErrorResponse>)> {
     let main_branch_name = get_main_branch_name(&*store, &db_id).await?;
-    list_working_commit_instances(State(store), Path((db_id, main_branch_name)), Query(query), Query(wc_query)).await
+    list_working_commit_instances(
+        State(store),
+        Path((db_id, main_branch_name)),
+        Query(query),
+        Query(wc_query),
+    )
+    .await
 }
 
 /// Get default branch working commit instance
-pub async fn get_default_branch_working_commit_instance<S: WorkingCommitStore + Store + BranchStore>(
+pub async fn get_default_branch_working_commit_instance<
+    S: WorkingCommitStore + Store + BranchStore,
+>(
     State(store): State<AppState<S>>,
     Path((db_id, instance_id)): Path<(Id, Id)>,
     Query(query): Query<ExpandQuery>,
 ) -> Result<Json<serde_json::Value>, (StatusCode, Json<ErrorResponse>)> {
     let main_branch_name = get_main_branch_name(&*store, &db_id).await?;
-    get_working_commit_instance(State(store), Path((db_id, main_branch_name, instance_id)), Query(query)).await
+    get_working_commit_instance(
+        State(store),
+        Path((db_id, main_branch_name, instance_id)),
+        Query(query),
+    )
+    .await
 }
 
 /// Query default branch working commit instance (POST)
-pub async fn query_default_branch_working_commit_instance<S: WorkingCommitStore + Store + BranchStore>(
+pub async fn query_default_branch_working_commit_instance<
+    S: WorkingCommitStore + Store + BranchStore,
+>(
     State(store): State<AppState<S>>,
     Path((db_id, instance_id)): Path<(Id, Id)>,
     RequestJson(request): RequestJson<BatchInstanceQueryRequest>,
 ) -> Result<Json<BatchQueryResponse>, (StatusCode, Json<ErrorResponse>)> {
     let main_branch_name = get_main_branch_name(&*store, &db_id).await?;
-    query_working_commit_instance_configuration(State(store), Path((db_id, main_branch_name, instance_id)), RequestJson(request)).await
+    query_working_commit_instance_configuration(
+        State(store),
+        Path((db_id, main_branch_name, instance_id)),
+        RequestJson(request),
+    )
+    .await
 }
 
 /// Query default branch working commit instance (GET)
-pub async fn get_default_branch_working_commit_instance_query<S: WorkingCommitStore + Store + BranchStore>(
+pub async fn get_default_branch_working_commit_instance_query<
+    S: WorkingCommitStore + Store + BranchStore,
+>(
     State(store): State<AppState<S>>,
     Path((db_id, instance_id)): Path<(Id, Id)>,
     Query(params): Query<std::collections::HashMap<String, String>>,
 ) -> Result<Json<serde_json::Value>, (StatusCode, Json<ErrorResponse>)> {
     let main_branch_name = get_main_branch_name(&*store, &db_id).await?;
-    get_working_commit_instance_query(State(store), Path((db_id, main_branch_name, instance_id)), Query(params)).await
+    get_working_commit_instance_query(
+        State(store),
+        Path((db_id, main_branch_name, instance_id)),
+        Query(params),
+    )
+    .await
 }
 
 // ============================================================================
@@ -12172,7 +12350,9 @@ pub async fn query_commit_working_commit_instance<S: WorkingCommitStore + Store 
 }
 
 /// Query commit working commit instance (GET) - NOT IMPLEMENTED
-pub async fn get_commit_working_commit_instance_query<S: WorkingCommitStore + Store + BranchStore>(
+pub async fn get_commit_working_commit_instance_query<
+    S: WorkingCommitStore + Store + BranchStore,
+>(
     _store: State<AppState<S>>,
     Path((_db_id, _commit_hash, _instance_id)): Path<(Id, String, Id)>,
     _params: Query<std::collections::HashMap<String, String>>,

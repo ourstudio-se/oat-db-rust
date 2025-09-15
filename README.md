@@ -1092,6 +1092,279 @@ curl -s http://localhost:7061/databases/furniture_catalog/instances/painting-min
 curl -s http://localhost:7061/databases/furniture_catalog/instances/car-001 | jq '.relationships.color.resolution_details'
 ```
 
+## 📐 Derived Properties System
+
+The OAT-DB includes a powerful derived properties system that enables dynamic calculations based on instance properties and relationships, supporting complex business logic without storing redundant data.
+
+### Core Features
+
+- **Expression-Based Calculations**: Properties computed using a rich expression language
+- **Relationship Aggregations**: Sum, count, and aggregate values across relationships
+- **Arithmetic Operations**: Support for add, subtract, multiply, divide operations
+- **Conditional Logic**: If-then-else expressions for complex business rules
+- **Type-Safe**: Each derived property declares its expected data type
+- **Lazy Evaluation**: Calculated on-demand only when requested
+
+### Expression Language
+
+#### Property References
+```json
+// Own property
+{ "type": "prop", "prop": "basePrice" }
+
+// Related instance property
+{ "type": "rel_prop", "rel": "color", "prop": "price" }
+```
+
+#### Arithmetic Operations
+```json
+// Addition: basePrice + 50
+{
+  "type": "add",
+  "left": { "type": "prop", "prop": "basePrice" },
+  "right": { "type": "lit_number", "value": 50 }
+}
+
+// Complex calculation: (basePrice * quantity) - discount
+{
+  "type": "sub",
+  "left": {
+    "type": "mul",
+    "left": { "type": "prop", "prop": "basePrice" },
+    "right": { "type": "prop", "prop": "quantity" }
+  },
+  "right": { "type": "prop", "prop": "discount" }
+}
+```
+
+#### Aggregations
+```json
+// Sum all component prices
+{
+  "type": "sum",
+  "over": "components",
+  "prop": "price",
+  "where": null
+}
+
+// Count components with price > 100
+{
+  "type": "count",
+  "over": "components",
+  "where": {
+    "type": "gt",
+    "left": { "type": "prop", "prop": "price" },
+    "right": { "type": "lit_number", "value": 100 }
+  }
+}
+```
+
+#### Conditional Expressions
+```json
+// Apply 10% discount if quantity > 10
+{
+  "type": "if",
+  "condition": {
+    "type": "gt",
+    "left": { "type": "prop", "prop": "quantity" },
+    "right": { "type": "lit_number", "value": 10 }
+  },
+  "then": {
+    "type": "mul",
+    "left": { "type": "prop", "prop": "price" },
+    "right": { "type": "lit_number", "value": 0.9 }
+  },
+  "else": { "type": "prop", "prop": "price" }
+}
+```
+
+### Schema Definition
+
+Add derived properties to any class using either full expressions or shortcuts:
+
+#### Full Expression Format
+```json
+{
+  "classes": [{
+    "id": "class-table",
+    "name": "Table",
+    "properties": [
+      { "id": "base_price", "name": "base_price", "data_type": "number" },
+      { "id": "discount", "name": "discount", "data_type": "number" }
+    ],
+    "relationships": [
+      { "id": "chairs", "name": "chairs", "targets": ["class-chair"] },
+      { "id": "color", "name": "color", "targets": ["class-color"] }
+    ],
+    "derived": [
+      {
+        "id": "total_price",
+        "name": "total_price",
+        "data_type": "number",
+        "expr": {
+          "type": "sub",
+          "left": {
+            "type": "add",
+            "left": {
+              "type": "add",
+              "left": { "type": "prop", "prop": "base_price" },
+              "right": { "type": "sum", "over": "chairs", "prop": "price" }
+            },
+            "right": { "type": "sum", "over": "color", "prop": "price" }
+          },
+          "right": { "type": "prop", "prop": "discount" }
+        }
+      }
+    ]
+  }]
+}
+```
+
+This calculates: `total_price = base_price + sum(chair prices) + sum(color prices) - discount`
+
+#### Shortcut Format (fn_short)
+For common patterns like summing a property across all relationships:
+
+```json
+{
+  "derived": [
+    {
+      "id": "der-totalPrice",
+      "name": "totalPrice",
+      "data_type": "number",
+      "fn_short": {
+        "method": "sum",
+        "property": "price"
+      }
+    }
+  ]
+}
+```
+
+This automatically expands to: own price + sum of all children's price properties
+
+### API Usage
+
+#### Adding Derived Properties
+
+1. Create working commit:
+```bash
+curl -X POST http://localhost:7061/databases/{db_id}/branches/{branch_id}/working-commit
+```
+
+2. Update class with derived property:
+```bash
+curl -X PATCH http://localhost:7061/databases/{db_id}/branches/{branch_id}/working-commit/schema/classes/{class_id} \
+  -H "Content-Type: application/json" \
+  -d '{
+    "derived": [{
+      "id": "der-totalPrice",
+      "name": "totalPrice",
+      "data_type": "number",
+      "expr": {
+        "type": "add",
+        "left": { "type": "prop", "prop": "basePrice" },
+        "right": { "type": "sum", "over": "components", "prop": "price" }
+      }
+    }]
+  }'
+```
+
+3. Commit changes:
+```bash
+curl -X POST http://localhost:7061/databases/{db_id}/branches/{branch_id}/working-commit/commit \
+  -d '{"message": "Add totalPrice derived property"}'
+```
+
+#### Querying Derived Values
+
+Include in configuration queries:
+```bash
+curl -X POST http://localhost:7061/databases/{db_id}/instances/{instance_id}/query \
+  -H "Content-Type: application/json" \
+  -d '{
+    "objective": "minimize_cost",
+    "derived_properties": ["totalPrice", "unitPrice"]
+  }'
+```
+
+Response includes calculated values:
+```json
+{
+  "configuration": { ... },
+  "derived_properties": {
+    "product-001": {
+      "totalPrice": 1275.0,
+      "unitPrice": 8.5
+    }
+  }
+}
+```
+
+### Examples from Seed Data
+
+#### Underbed Total Price
+```json
+{
+  "id": "der-underbed-totalPrice",
+  "name": "totalPrice",
+  "data_type": "number",
+  "expr": {
+    "type": "add",
+    "left": { "type": "prop", "prop": "basePrice" },
+    "right": { "type": "sum", "over": "leg", "prop": "price" }
+  }
+}
+```
+
+#### Common Patterns
+
+**Total with Percentage Discount:**
+```json
+{
+  "expr": {
+    "type": "mul",
+    "left": {
+      "type": "add",
+      "left": { "type": "prop", "prop": "basePrice" },
+      "right": { "type": "sum", "over": "addons", "prop": "price" }
+    },
+    "right": {
+      "type": "sub",
+      "left": { "type": "lit_number", "value": 1.0 },
+      "right": { "type": "prop", "prop": "discountRate" }
+    }
+  }
+}
+```
+
+**Average Price:**
+```json
+{
+  "expr": {
+    "type": "div",
+    "left": { "type": "sum", "over": "items", "prop": "price" },
+    "right": { "type": "count", "over": "items" }
+  }
+}
+```
+
+### Key Characteristics
+
+- **Domain-Aware**: Aggregations only include selected instances (domain.lower >= 1)
+- **Performance**: Complex expressions may impact query performance
+- **No Circular References**: Cannot reference other derived properties
+- **JSON Types**: Handles conversion between JSON values and numeric types
+- **Configuration Context**: Calculations consider full configuration state
+
+### Use Cases
+
+- **Dynamic Pricing**: Calculate totals, apply discounts, handle complex pricing rules
+- **Inventory Management**: Track quantities, calculate stock levels
+- **Business Metrics**: Compute KPIs and aggregated values
+- **Configuration Validation**: Ensure configurations meet business constraints
+- **Cost Optimization**: Support solver objectives with calculated costs
+
 ## 🎯 Domain System for Configuration Spaces
 
 The OAT-DB includes a comprehensive domain system for managing configuration spaces and instance selection constraints. Domains define value ranges for instances, enabling super-configuration management and constraint satisfaction.

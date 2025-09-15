@@ -125,13 +125,16 @@ impl SimpleEvaluator {
             // Evaluate each requested derived property
             for derived_prop_name in requested_properties {
                 if let Some(derived_def) = class_def.derived.iter().find(|d| d.name == *derived_prop_name) {
-                    match Self::evaluate_derived_expr(store, &derived_def.expr, instance, configuration).await {
-                        Ok(value) => {
-                            derived_values.insert(derived_prop_name.clone(), value);
-                        }
-                        Err(e) => {
-                            // Log error but continue with other properties
-                            eprintln!("Failed to evaluate derived property '{}': {}", derived_prop_name, e);
+                    // Get the expression using the new method that handles fn_short
+                    if let Some(expr) = derived_def.get_expr(class_def) {
+                        match Self::evaluate_derived_expr(store, &expr, instance, configuration).await {
+                            Ok(value) => {
+                                derived_values.insert(derived_prop_name.clone(), value);
+                            }
+                            Err(e) => {
+                                // Log error but continue with other properties
+                                eprintln!("Failed to evaluate derived property '{}': {}", derived_prop_name, e);
+                            }
                         }
                     }
                 }

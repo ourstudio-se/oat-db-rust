@@ -1,5 +1,5 @@
 use crate::model::{
-    Branch, ClassDef, DataType, Database, DefaultPool, DerivedDef, Domain, Expr, Id, Instance,
+    Branch, ClassDef, DataType, Database, DefaultPool, DerivedDef, Domain, Expr, FnShort, Id, Instance,
     PropertyDef, PropertyValue, Quantifier, RelationshipDef, RelationshipSelection, Schema,
     SelectionType,
 };
@@ -206,7 +206,7 @@ async fn load_schema<S: Store>(store: &S, branch_id: &Id) -> Result<()> {
                     id: "der-underbed-totalPrice".to_string(),
                     name: "totalPrice".to_string(),
                     data_type: DataType::Number,
-                    expr: Expr::Add {
+                    expr: Some(Expr::Add {
                         left: Box::new(Expr::Prop {
                             prop: "basePrice".to_string(),
                         }),
@@ -215,7 +215,8 @@ async fn load_schema<S: Store>(store: &S, branch_id: &Id) -> Result<()> {
                             prop: "price".to_string(),
                             r#where: None,
                         }),
-                    },
+                    }),
+                    fn_short: None,
                 }],
                 domain_constraint: Domain::binary(), // Each Underbed instance defaults to domain [0,1]
                 created_by: "seed-data".to_string(),
@@ -447,7 +448,19 @@ async fn load_schema<S: Store>(store: &S, branch_id: &Id) -> Result<()> {
                     },
         ],
         relationships: vec![],
-        derived: vec![],
+        derived: vec![
+            // Example using fn_short - sum all children's price properties plus own price
+            DerivedDef {
+                id: "der-color-totalPrice".to_string(),
+                name: "totalPrice".to_string(),
+                data_type: DataType::Number,
+                expr: None,
+                fn_short: Some(FnShort {
+                    method: "sum".to_string(),
+                    property: "price".to_string(),
+                }),
+            }
+        ],
         domain_constraint: Domain::constant(1), // Each Color instance defaults to domain [1,1] (always selected)
     });
 
@@ -1611,7 +1624,7 @@ async fn load_feature_schema<S: Store>(store: &S, branch_id: &Id) -> Result<()> 
                     id: "der-underbed-totalPrice".to_string(),
                     name: "totalPrice".to_string(),
                     data_type: DataType::Number,
-                    expr: Expr::Add {
+                    expr: Some(Expr::Add {
                         left: Box::new(Expr::Prop {
                             prop: "basePrice".to_string(),
                         }),
@@ -1620,7 +1633,8 @@ async fn load_feature_schema<S: Store>(store: &S, branch_id: &Id) -> Result<()> 
                             prop: "price".to_string(),
                             r#where: None,
                         }),
-                    },
+                    }),
+                    fn_short: None,
                 }],
                 domain_constraint: Domain::binary(), // Each Underbed instance defaults to domain [0,1]
             },
@@ -2228,7 +2242,7 @@ async fn create_kitchen_schema(branch_name: String) -> Result<Schema> {
                 id: "total_price".to_string(),
                 name: "total_price".to_string(),
                 data_type: DataType::Number,
-                expr: Expr::Add {
+                expr: Some(Expr::Add {
                     left: Box::new(Expr::Add {
                         left: Box::new(Expr::Add {
                             left: Box::new(Expr::Prop {
@@ -2252,7 +2266,8 @@ async fn create_kitchen_schema(branch_name: String) -> Result<Schema> {
                             prop: "discount".to_string(),
                         }),
                     }),
-                },
+                }),
+                fn_short: None,
             },
         ],
         domain_constraint: Domain::binary(), // Tables can be selected (1) or not (0)

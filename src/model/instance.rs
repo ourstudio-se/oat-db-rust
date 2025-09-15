@@ -102,7 +102,6 @@ pub struct InstanceUpdate {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct ExpandedInstance {
     pub id: Id,
-    pub branch_id: Id,
     #[serde(rename = "class")]
     pub class_id: Id,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -128,10 +127,10 @@ pub struct ExpandedInstance {
 pub struct ResolvedRelationship {
     /// The actual resolved instance IDs
     pub materialized_ids: Vec<Id>,
-    
+
     /// How these IDs were resolved
     pub resolution_method: ResolutionMethod,
-    
+
     /// Additional details about the resolution process
     #[serde(skip_serializing_if = "Option::is_none")]
     pub resolution_details: Option<ResolutionDetails>,
@@ -163,27 +162,27 @@ pub struct ResolutionDetails {
     /// The original relationship definition before resolution
     #[serde(skip_serializing_if = "Option::is_none")]
     pub original_definition: Option<serde_json::Value>,
-    
+
     /// What triggered the resolution (e.g., "pool_filter", "explicit_selection")
     #[serde(skip_serializing_if = "Option::is_none")]
     pub resolved_from: Option<String>,
-    
+
     /// Description of filters/conditions applied
     #[serde(skip_serializing_if = "Option::is_none")]
     pub filter_description: Option<String>,
-    
+
     /// Total number of instances that matched the pool before selection
     #[serde(skip_serializing_if = "Option::is_none")]
     pub total_pool_size: Option<usize>,
-    
+
     /// Number of instances that were excluded by filters
     #[serde(skip_serializing_if = "Option::is_none")]
     pub filtered_out_count: Option<usize>,
-    
+
     /// Time taken for this relationship resolution (microseconds)
     #[serde(skip_serializing_if = "Option::is_none")]
     pub resolution_time_us: Option<u64>,
-    
+
     /// Any warnings or notes about the resolution
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub notes: Vec<String>,
@@ -211,7 +210,7 @@ impl Default for Instance {
     fn default() -> Self {
         let now = Utc::now();
         let system_user = "system".to_string();
-        
+
         Self {
             id: "default-instance".to_string(),
             class_id: "default-class".to_string(),
@@ -230,10 +229,9 @@ impl Default for ExpandedInstance {
     fn default() -> Self {
         let now = Utc::now();
         let system_user = "system".to_string();
-        
+
         Self {
             id: "default-instance".to_string(),
-            branch_id: "default-branch".to_string(),
             class_id: "default-class".to_string(),
             domain: None,
             properties: HashMap::new(),
@@ -262,7 +260,7 @@ impl Instance {
         if let Some(relationships) = update.relationships {
             self.relationships = relationships;
         }
-        
+
         // Update audit fields (preserve created_by/created_at)
         self.updated_by = user_id;
         self.updated_at = Utc::now();
