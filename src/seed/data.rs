@@ -1,5 +1,5 @@
 use crate::model::{
-    Branch, ClassDef, DataType, Database, DefaultPool, DerivedDef, Domain, Expr, FnShort, Id, Instance,
+    Branch, ClassDef, DataType, Database, DefaultPool, DerivedDef, Domain, Expr, Id, Instance,
     PropertyDef, PropertyValue, Quantifier, RelationshipDef, RelationshipSelection, Schema,
     SelectionType,
 };

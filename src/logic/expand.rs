@@ -2,7 +2,6 @@ use crate::model::{
     ExpandedInstance, Id, Instance, PropertyValue, RelationshipSelection, ResolutionDetails,
     ResolutionMethod, ResolvedRelationship, Schema,
 };
-use crate::schema;
 use crate::store::traits::Store;
 use anyhow::Result;
 use std::collections::{HashMap, HashSet};

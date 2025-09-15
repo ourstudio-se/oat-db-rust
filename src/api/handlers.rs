@@ -7484,7 +7484,7 @@ pub async fn get_schema<S: Store>(
 pub async fn upsert_schema<S: Store>(
     State(store): State<AppState<S>>,
     Path((db_id, version_id)): Path<(Id, Id)>,
-    RequestJson(mut schema): RequestJson<Schema>,
+    RequestJson(schema): RequestJson<Schema>,
 ) -> Result<Json<Schema>, (StatusCode, Json<ErrorResponse>)> {
     let branch_id = version_id;
     let branch_name = match get_branch_name_from_legacy_id(&*store, &db_id, &branch_id).await {
@@ -7861,7 +7861,7 @@ pub async fn get_database_schema<S: Store>(
 pub async fn upsert_database_schema<S: Store>(
     State(store): State<AppState<S>>,
     Path(db_id): Path<Id>,
-    RequestJson(mut schema): RequestJson<Schema>,
+    RequestJson(schema): RequestJson<Schema>,
 ) -> Result<Json<Schema>, (StatusCode, Json<ErrorResponse>)> {
     let main_branch_name = get_main_branch_name(&*store, &db_id).await?;
 
@@ -7986,7 +7986,7 @@ pub async fn get_database_instance<S: Store>(
 pub async fn upsert_database_instance<S: Store>(
     State(store): State<AppState<S>>,
     Path(db_id): Path<Id>,
-    RequestJson(mut instance): RequestJson<Instance>,
+    RequestJson(instance): RequestJson<Instance>,
 ) -> Result<Json<Instance>, (StatusCode, Json<ErrorResponse>)> {
     let main_branch_name = get_main_branch_name(&*store, &db_id).await?;
 

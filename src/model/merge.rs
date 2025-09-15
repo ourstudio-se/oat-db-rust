@@ -1,7 +1,7 @@
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 
-use crate::model::{ClassDef, Id, Instance, PropertyValue, RelationshipSelection};
+use crate::model::{ClassDef, Id, Instance};
 
 /// Represents a change operation in the database
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]

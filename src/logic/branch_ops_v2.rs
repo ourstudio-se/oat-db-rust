@@ -3,10 +3,10 @@ use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 
 use crate::logic::merge::MergeEngine;
-use crate::logic::validate_simple::{SimpleValidator, ValidationResult};
+use crate::logic::validate_simple::ValidationResult;
 use crate::model::merge::{ConflictResolution, MergeState};
 use crate::model::{
-    Branch, CommitData, Id, NewCommit, NewWorkingCommit, WorkingCommit, WorkingCommitStatus,
+    Id, NewWorkingCommit, WorkingCommit, WorkingCommitStatus,
 };
 use crate::store::traits::{BranchStore, CommitStore, Store, WorkingCommitStore};
 

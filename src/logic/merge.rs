@@ -2,10 +2,10 @@ use anyhow::{anyhow, Result};
 use std::collections::{HashMap, HashSet};
 
 use crate::model::merge::{
-    ChangeOp, CommitDiff, ConflictResolution, ConflictType, FieldChange, MergeConflict,
-    MergeResult, MergeState, ResourceType, should_ignore_field,
+    ChangeOp, CommitDiff, FieldChange, MergeConflict,
+    MergeResult,
 };
-use crate::model::{ClassDef, Commit, CommitData, Id, Instance, Schema};
+use crate::model::{ClassDef, CommitData, Instance, Schema};
 use crate::store::traits::Store;
 
 /// Implements three-way merge algorithm for commits

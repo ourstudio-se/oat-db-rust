@@ -1,5 +1,5 @@
 use crate::api::handlers::{AppState, ErrorResponse};
-use crate::logic::branch_ops_v2::{BranchOperationsV2, ResolveConflictsRequest, MergeOperationResult};
+use crate::logic::branch_ops_v2::{BranchOperationsV2, ResolveConflictsRequest};
 use crate::store::traits::{BranchStore, CommitStore, Store, WorkingCommitStore};
 use axum::{
     extract::{Path, State},
