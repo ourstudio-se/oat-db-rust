@@ -1,0 +1,64 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n            SELECT id, commit_hash, tag_type, tag_name, tag_description, created_at, created_by, metadata\n            FROM commit_tags\n            WHERE commit_hash = $1\n            ORDER BY created_at DESC\n            ",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "id",
+        "type_info": "Int4"
+      },
+      {
+        "ordinal": 1,
+        "name": "commit_hash",
+        "type_info": "Varchar"
+      },
+      {
+        "ordinal": 2,
+        "name": "tag_type",
+        "type_info": "Varchar"
+      },
+      {
+        "ordinal": 3,
+        "name": "tag_name",
+        "type_info": "Varchar"
+      },
+      {
+        "ordinal": 4,
+        "name": "tag_description",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 5,
+        "name": "created_at",
+        "type_info": "Timestamptz"
+      },
+      {
+        "ordinal": 6,
+        "name": "created_by",
+        "type_info": "Varchar"
+      },
+      {
+        "ordinal": 7,
+        "name": "metadata",
+        "type_info": "Jsonb"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Text"
+      ]
+    },
+    "nullable": [
+      false,
+      false,
+      false,
+      false,
+      true,
+      false,
+      true,
+      true
+    ]
+  },
+  "hash": "44f5a235b083d7271dcf300fa458364aff85ba9215dc5192b16bb825c50eb83f"
+}

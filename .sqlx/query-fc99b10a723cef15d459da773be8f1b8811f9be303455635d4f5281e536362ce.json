@@ -1,0 +1,22 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n            INSERT INTO branches (database_id, name, description, parent_branch_name, created_at, current_commit_hash, commit_message, author, status)\n            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)\n            ON CONFLICT (database_id, name) DO UPDATE SET\n                description = EXCLUDED.description,\n                parent_branch_name = EXCLUDED.parent_branch_name,\n                current_commit_hash = EXCLUDED.current_commit_hash,\n                commit_message = EXCLUDED.commit_message,\n                author = EXCLUDED.author,\n                status = EXCLUDED.status,\n                updated_at = NOW()\n            ",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Varchar",
+        "Varchar",
+        "Text",
+        "Varchar",
+        "Varchar",
+        "Varchar",
+        "Text",
+        "Varchar",
+        "Varchar"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "fc99b10a723cef15d459da773be8f1b8811f9be303455635d4f5281e536362ce"
+}

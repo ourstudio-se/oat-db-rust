@@ -1,0 +1,15 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n            WITH latest AS (\n                SELECT id FROM working_commits\n                WHERE database_id = $1 AND branch_name = $2 AND status = 'active'\n                ORDER BY updated_at DESC\n                LIMIT 1\n            )\n            UPDATE working_commits\n            SET status = 'abandoned'\n            WHERE database_id = $1 \n              AND branch_name = $2 \n              AND status = 'active'\n              AND id NOT IN (SELECT id FROM latest)\n            ",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Text",
+        "Text"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "20eec8af1198e464f591e08b7de12658064a2845c091c573bb75e69b3a5c67cd"
+}

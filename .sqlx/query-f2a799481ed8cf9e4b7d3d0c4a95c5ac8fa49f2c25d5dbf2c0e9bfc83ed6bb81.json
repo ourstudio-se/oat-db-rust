@@ -1,0 +1,47 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n            SELECT DISTINCT c.hash, c.database_id, c.message, c.author, c.created_at\n            FROM commits c\n            INNER JOIN commit_tags ct ON c.hash = ct.commit_hash\n            WHERE c.database_id = $1\n            ORDER BY c.created_at DESC\n            LIMIT $2\n            ",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "hash",
+        "type_info": "Varchar"
+      },
+      {
+        "ordinal": 1,
+        "name": "database_id",
+        "type_info": "Varchar"
+      },
+      {
+        "ordinal": 2,
+        "name": "message",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 3,
+        "name": "author",
+        "type_info": "Varchar"
+      },
+      {
+        "ordinal": 4,
+        "name": "created_at",
+        "type_info": "Timestamptz"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Text",
+        "Int8"
+      ]
+    },
+    "nullable": [
+      false,
+      false,
+      true,
+      true,
+      false
+    ]
+  },
+  "hash": "f2a799481ed8cf9e4b7d3d0c4a95c5ac8fa49f2c25d5dbf2c0e9bfc83ed6bb81"
+}

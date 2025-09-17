@@ -1,0 +1,83 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n            SELECT id, database_id, branch_name, based_on_hash, author, created_at, updated_at,\n                   schema_data, instances_data, status, merge_state\n            FROM working_commits \n            WHERE database_id = $1 AND branch_name = $2\n            ORDER BY updated_at DESC\n            ",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "id",
+        "type_info": "Varchar"
+      },
+      {
+        "ordinal": 1,
+        "name": "database_id",
+        "type_info": "Varchar"
+      },
+      {
+        "ordinal": 2,
+        "name": "branch_name",
+        "type_info": "Varchar"
+      },
+      {
+        "ordinal": 3,
+        "name": "based_on_hash",
+        "type_info": "Varchar"
+      },
+      {
+        "ordinal": 4,
+        "name": "author",
+        "type_info": "Varchar"
+      },
+      {
+        "ordinal": 5,
+        "name": "created_at",
+        "type_info": "Timestamptz"
+      },
+      {
+        "ordinal": 6,
+        "name": "updated_at",
+        "type_info": "Timestamptz"
+      },
+      {
+        "ordinal": 7,
+        "name": "schema_data",
+        "type_info": "Jsonb"
+      },
+      {
+        "ordinal": 8,
+        "name": "instances_data",
+        "type_info": "Jsonb"
+      },
+      {
+        "ordinal": 9,
+        "name": "status",
+        "type_info": "Varchar"
+      },
+      {
+        "ordinal": 10,
+        "name": "merge_state",
+        "type_info": "Jsonb"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Text",
+        "Text"
+      ]
+    },
+    "nullable": [
+      false,
+      false,
+      true,
+      true,
+      true,
+      false,
+      false,
+      false,
+      false,
+      false,
+      true
+    ]
+  },
+  "hash": "262f86d27e492e28f993df287a4022833c176a910312d3b596fc722ba02c3dd2"
+}

@@ -1,0 +1,23 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n            INSERT INTO commits (hash, database_id, parent_hash, author, message, created_at, \n                               data, data_size, schema_classes_count, instances_count)\n            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)\n            ",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Varchar",
+        "Varchar",
+        "Varchar",
+        "Varchar",
+        "Text",
+        "Timestamptz",
+        "Bytea",
+        "Int8",
+        "Int4",
+        "Int4"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "dc041b7b08297a98c6f6c0cdfe4af04da512cf58b817916e2d59b793dd96dc85"
+}
