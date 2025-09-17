@@ -624,7 +624,7 @@ impl crate::store::traits::WorkingCommitStore for PostgresStore {
         &self,
         id: &crate::model::Id,
     ) -> Result<Option<crate::model::WorkingCommit>> {
-        eprintln!("DEBUG: Fetching working commit with id: {}", id);
+        // Fetching working commit by id
         let row = sqlx::query!(
             r#"
             SELECT id, database_id, branch_name, based_on_hash, author, created_at, updated_at,
@@ -639,10 +639,10 @@ impl crate::store::traits::WorkingCommitStore for PostgresStore {
         .context("Failed to fetch working commit")?;
 
         let Some(row) = row else {
-            eprintln!("DEBUG: Working commit {} not found in database", id);
+            // Working commit not found in database
             return Ok(None);
         };
-        eprintln!("DEBUG: Found working commit {} with status {}", id, row.status);
+        // Found working commit with status
 
         let mut schema_data: crate::model::Schema =
             serde_json::from_value(row.schema_data).context("Failed to deserialize schema data")?;
@@ -815,7 +815,7 @@ impl crate::store::traits::WorkingCommitStore for PostgresStore {
         .await
         .context("Failed to create working commit")?;
 
-        eprintln!("DEBUG: Created working commit {} with status {}", working_commit.id, status_str);
+        // Created working commit with status
         Ok(working_commit)
     }
 
@@ -823,7 +823,7 @@ impl crate::store::traits::WorkingCommitStore for PostgresStore {
         &self,
         mut working_commit: crate::model::WorkingCommit,
     ) -> Result<()> {
-        eprintln!("DEBUG: Updating working commit {} with status {:?}, has_merge_state: {}", working_commit.id, working_commit.status, working_commit.merge_state.is_some());
+        // Updating working commit with status and merge state
         // Touch the working commit to update timestamp
         working_commit.touch();
 
@@ -864,7 +864,7 @@ impl crate::store::traits::WorkingCommitStore for PostgresStore {
         .await
         .context("Failed to update working commit")?;
 
-        eprintln!("DEBUG: Successfully updated working commit {} with status {}", working_commit.id, status_str);
+        // Successfully updated working commit
         Ok(())
     }
 

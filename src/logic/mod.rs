@@ -16,7 +16,8 @@ pub use validate_simple::*;
 // pub use evaluate::*;
 pub use evaluate_simple::*;
 // pub use resolve::*;
-pub use branch_ops::*;
+// Re-export only from branch_ops_v2 (the newer version)
+// pub use branch_ops::*;  // Old version - commented out to avoid conflicts
 pub use branch_ops_v2::*;
 pub use expand::*;
 pub use merge::*;

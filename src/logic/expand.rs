@@ -192,8 +192,8 @@ impl Expander {
     }
 
     pub async fn resolve_selection_enhanced<S: Store>(
-        store: &S,
-        selection: &RelationshipSelection,
+        _store: &S,
+        _selection: &RelationshipSelection,
     ) -> Result<ResolvedRelationship> {
         // WARNING: This method has no branch context - it will search ALL databases!
         // Use resolve_selection_enhanced_with_branch for proper isolation
@@ -369,6 +369,7 @@ impl Expander {
     }
 
     // Keep the old function for any remaining uses
+    #[allow(dead_code)]
     async fn resolve_selection<S: Store>(
         store: &S,
         selection: &RelationshipSelection,
@@ -439,6 +440,7 @@ impl Expander {
     }
 
     /// Check if an instance matches a where clause (basic implementation)
+    #[allow(dead_code)]
     fn matches_where_clause(
         _instance: &crate::model::Instance,
         _where_clause: &serde_json::Value,

@@ -7484,7 +7484,7 @@ pub async fn get_schema<S: Store>(
 pub async fn upsert_schema<S: Store>(
     State(store): State<AppState<S>>,
     Path((db_id, version_id)): Path<(Id, Id)>,
-    RequestJson(schema): RequestJson<Schema>,
+    RequestJson(_schema): RequestJson<Schema>,
 ) -> Result<Json<Schema>, (StatusCode, Json<ErrorResponse>)> {
     let branch_id = version_id;
     let branch_name = match get_branch_name_from_legacy_id(&*store, &db_id, &branch_id).await {
@@ -7527,7 +7527,7 @@ pub async fn list_instances<S: Store>(
         Err(error_response) => return Err(error_response),
     };
 
-    let filter = query.class_id.map(|class_id| InstanceFilter {
+    let _filter = query.class_id.map(|class_id| InstanceFilter {
         types: Some(vec![class_id]),
         where_clause: None,
         sort: None,
@@ -7583,7 +7583,7 @@ pub async fn list_instances<S: Store>(
 pub async fn get_instance<S: Store>(
     State(store): State<AppState<S>>,
     Path((db_id, version_id, id)): Path<(Id, Id, Id)>,
-    Query(query): Query<ExpandQuery>,
+    Query(_query): Query<ExpandQuery>,
 ) -> Result<Json<InstanceResponse>, (StatusCode, Json<ErrorResponse>)> {
     let branch_name = match get_branch_name_from_legacy_id(&*store, &db_id, &version_id).await {
         Ok(name) => name,
@@ -7777,7 +7777,10 @@ pub async fn update_instance<S: WorkingCommitStore + Store>(
                 if let Ok(rels) =
                     serde_json::from_value::<HashMap<String, RelationshipSelection>>(value)
                 {
-                    // PATCH semantics: merge new relationships with existing ones\n                    for (rel_key, rel_value) in rels {\n                        instance.relationships.insert(rel_key, rel_value);\n                    }
+                    // PATCH semantics: merge new relationships with existing ones
+                    for (rel_key, rel_value) in rels {
+                        instance.relationships.insert(rel_key, rel_value);
+                    }
                 }
             }
             "class" => {
@@ -7861,9 +7864,9 @@ pub async fn get_database_schema<S: Store>(
 pub async fn upsert_database_schema<S: Store>(
     State(store): State<AppState<S>>,
     Path(db_id): Path<Id>,
-    RequestJson(schema): RequestJson<Schema>,
+    RequestJson(_schema): RequestJson<Schema>,
 ) -> Result<Json<Schema>, (StatusCode, Json<ErrorResponse>)> {
-    let main_branch_name = get_main_branch_name(&*store, &db_id).await?;
+    let _main_branch_name = get_main_branch_name(&*store, &db_id).await?;
 
     // In the new commit-based architecture, schema updates must be done through working commits
     // This endpoint should be deprecated in favor of working commit operations
@@ -7883,7 +7886,7 @@ pub async fn list_database_instances<S: Store>(
 ) -> Result<Json<ListResponse<InstanceResponse>>, (StatusCode, Json<ErrorResponse>)> {
     let main_branch_name = get_main_branch_name(&*store, &db_id).await?;
 
-    let filter = query.class_id.map(|class_id| InstanceFilter {
+    let _filter = query.class_id.map(|class_id| InstanceFilter {
         types: Some(vec![class_id]),
         where_clause: None,
         sort: None,
@@ -7936,7 +7939,7 @@ pub async fn list_database_instances<S: Store>(
 pub async fn get_database_instance<S: Store>(
     State(store): State<AppState<S>>,
     Path((db_id, id)): Path<(Id, Id)>,
-    Query(query): Query<ExpandQuery>,
+    Query(_query): Query<ExpandQuery>,
 ) -> Result<Json<InstanceResponse>, (StatusCode, Json<ErrorResponse>)> {
     let main_branch_name = get_main_branch_name(&*store, &db_id).await?;
     let working_commit = match store
@@ -8057,7 +8060,10 @@ pub async fn update_database_instance<S: WorkingCommitStore + Store>(
                 if let Ok(rels) =
                     serde_json::from_value::<HashMap<String, RelationshipSelection>>(value)
                 {
-                    // PATCH semantics: merge new relationships with existing ones\n                    for (rel_key, rel_value) in rels {\n                        instance.relationships.insert(rel_key, rel_value);\n                    }
+                    // PATCH semantics: merge new relationships with existing ones
+                    for (rel_key, rel_value) in rels {
+                        instance.relationships.insert(rel_key, rel_value);
+                    }
                 }
             }
             "class" => {
@@ -8334,7 +8340,7 @@ pub async fn update_class<S: WorkingCommitStore + Store>(
 
 pub async fn delete_class<S: Store>(
     State(store): State<AppState<S>>,
-    Path((db_id, branch_name, class_id)): Path<(Id, String, Id)>,
+    Path((db_id, branch_name, _class_id)): Path<(Id, String, Id)>,
 ) -> Result<Json<serde_json::Value>, (StatusCode, Json<ErrorResponse>)> {
     // Verify branch belongs to database
     if let Ok(Some(branch)) = store.get_branch(&db_id, &branch_name).await {
@@ -8390,7 +8396,7 @@ pub async fn add_database_class<S: Store>(
     user_context: crate::model::UserContext,
     RequestJson(new_class): RequestJson<NewClassDef>,
 ) -> Result<Json<ClassDef>, (StatusCode, Json<ErrorResponse>)> {
-    let main_branch_name = get_main_branch_name(&*store, &db_id).await?;
+    let _main_branch_name = get_main_branch_name(&*store, &db_id).await?;
 
     let _class = ClassDef::from_new(new_class, user_context.user_id.clone());
 
@@ -8443,9 +8449,9 @@ pub async fn update_database_class<S: Store>(
 
 pub async fn delete_database_class<S: Store>(
     State(store): State<AppState<S>>,
-    Path((db_id, class_id)): Path<(Id, Id)>,
+    Path((db_id, _class_id)): Path<(Id, Id)>,
 ) -> Result<Json<serde_json::Value>, (StatusCode, Json<ErrorResponse>)> {
-    let main_branch_name = get_main_branch_name(&*store, &db_id).await?;
+    let _main_branch_name = get_main_branch_name(&*store, &db_id).await?;
 
     // Class schema updates must be done through working commits in the new architecture
     return Err((
@@ -8460,7 +8466,7 @@ pub async fn delete_database_class<S: Store>(
 pub async fn delete_instance<S: WorkingCommitStore + Store>(
     State(store): State<AppState<S>>,
     Path((db_id, branch_id, id)): Path<(Id, Id, Id)>,
-    user_context: UserContext,
+    _user_context: UserContext,
 ) -> Result<Json<serde_json::Value>, (StatusCode, Json<ErrorResponse>)> {
     let branch_name = match get_branch_name_from_legacy_id(&*store, &db_id, &branch_id).await {
         Ok(name) => name,
@@ -8517,7 +8523,7 @@ pub async fn delete_instance<S: WorkingCommitStore + Store>(
 pub async fn delete_database_instance<S: WorkingCommitStore + Store>(
     State(store): State<AppState<S>>,
     Path((db_id, id)): Path<(Id, Id)>,
-    user_context: UserContext,
+    _user_context: UserContext,
 ) -> Result<Json<serde_json::Value>, (StatusCode, Json<ErrorResponse>)> {
     let main_branch_name = get_main_branch_name(&*store, &db_id).await?;
 
@@ -9466,10 +9472,11 @@ fn create_default_pool_selection(rel_def: &crate::model::RelationshipDef) -> Rel
 }
 
 /// Helper function to enhance working commit response with resolved relationships
+#[allow(dead_code)]
 async fn enhance_working_commit_response_with_resolved_relationships<S: Store>(
-    store: &S,
-    db_id: &Id,
-    branch_name: &str,
+    _store: &S,
+    _db_id: &Id,
+    _branch_name: &str,
     working_commit: &WorkingCommit,
     mut response: serde_json::Value,
 ) -> anyhow::Result<serde_json::Value> {
@@ -10748,10 +10755,7 @@ pub async fn get_working_commit_resolved<S: WorkingCommitStore + Store>(
                                 // Also check class schema for relationships with default pools that aren't explicitly configured
                                 if let Some(instance_class) = instance_obj.get("class") {
                                     if let Some(class_id_str) = instance_class.as_str() {
-                                        eprintln!(
-                                            "DEBUG: Processing class {} for instance",
-                                            class_id_str
-                                        );
+                                        // Processing class for instance
                                         // Get the class definition from the working commit schema
                                         if let Some(class_def) = working_commit
                                             .schema_data
@@ -10759,13 +10763,10 @@ pub async fn get_working_commit_resolved<S: WorkingCommitStore + Store>(
                                             .iter()
                                             .find(|c| c.id == class_id_str)
                                         {
-                                            eprintln!(
-                                                "DEBUG: Found class definition for {}",
-                                                class_id_str
-                                            );
+                                            // Found class definition
                                             for rel_def in &class_def.relationships {
                                                 let rel_name = &rel_def.id;
-                                                eprintln!("DEBUG: Checking relationship {} with default pool: {:?}", rel_name, rel_def.default_pool);
+                                                // Checking relationship with default pool
 
                                                 // Only process if this relationship isn't already in enhanced_rels (i.e., not explicitly configured on instance)
                                                 if !enhanced_rels.contains_key(rel_name) {
@@ -10842,11 +10843,12 @@ pub async fn get_working_commit_resolved<S: WorkingCommitStore + Store>(
 // Parse the original selection
 
 /// Expand relationships in working commit instances and create enhanced response
+#[allow(dead_code)]
 async fn expand_working_commit_relationships<S: Store>(
-    store: &S,
+    _store: &S,
     working_commit: WorkingCommit,
-    database_id: &Id,
-    branch_name: &str,
+    _database_id: &Id,
+    _branch_name: &str,
 ) -> anyhow::Result<WorkingCommitResponse> {
     let mut enhanced_instances = Vec::new();
     let other_instances = working_commit.instances_data.clone();
@@ -11026,7 +11028,7 @@ async fn resolve_selection_with_working_commit_context(
         _ => {
             // Get instances and schema from working_commit
             let instances = working_commit.instances_data.clone();
-            let schema = working_commit.schema_data.clone();
+            let _schema = working_commit.schema_data.clone();
             // For other types, fall back to the standard resolution
             Expander::resolve_selection_enhanced_with_branch(&instances, selection).await
         }
@@ -11038,54 +11040,31 @@ fn resolve_pool_filter_with_working_commit(
     filter: &crate::model::InstanceFilter,
     working_commit: &WorkingCommit,
 ) -> anyhow::Result<Vec<Id>> {
-    eprintln!(
-        "DEBUG: resolve_pool_filter_with_working_commit called with filter: {:?}",
-        filter
-    );
-    eprintln!(
-        "DEBUG: Working commit has {} instances",
-        working_commit.instances_data.len()
-    );
+    // Resolving pool filter with working commit
 
-    // Debug: List all instances in working commit
-    for inst in &working_commit.instances_data {
-        eprintln!(
-            "DEBUG: Working commit instance: {} of type {}",
-            inst.id, inst.class_id
-        );
-    }
+    // Process all instances in working commit
 
     if let Some(types) = &filter.types {
         let mut matching_instances = Vec::new();
 
         // Search through working commit instances instead of branch instances
         for target_type in types {
-            eprintln!("DEBUG: Looking for instances of type: {}", target_type);
+            // Looking for instances of type
             for instance in &working_commit.instances_data {
                 if instance.class_id == *target_type {
-                    eprintln!(
-                        "DEBUG: Found matching instance: {} of type {}",
-                        instance.id, instance.class_id
-                    );
+                    // Found matching instance
                     matching_instances.push(instance.clone());
                 }
             }
         }
-        eprintln!(
-            "DEBUG: Total matching instances before filtering: {}",
-            matching_instances.len()
-        );
+        // Total matching instances before filtering
 
         // Apply where_clause filters if present using our unified filtering system
         if let Some(where_clause) = &filter.where_clause {
-            eprintln!("DEBUG: Applying where_clause filter: {:?}", where_clause);
-            let before_filter = matching_instances.len();
+            // Applying where_clause filter
+            let _before_filter = matching_instances.len();
             matching_instances = crate::logic::filter_instances(matching_instances, where_clause);
-            eprintln!(
-                "DEBUG: After where_clause filter: {} instances (filtered out {})",
-                matching_instances.len(),
-                before_filter - matching_instances.len()
-            );
+            // After where_clause filter
         }
 
         // Apply sorting if present (similar to expand.rs implementation)
@@ -11114,15 +11093,15 @@ fn resolve_pool_filter_with_working_commit(
 
         // Apply limit if present
         if let Some(limit) = filter.limit {
-            eprintln!("DEBUG: Applying limit: {}", limit);
+            // Applying limit
             matching_instances.truncate(limit);
         }
 
         let result: Vec<Id> = matching_instances.into_iter().map(|i| i.id).collect();
-        eprintln!("DEBUG: Final result IDs: {:?}", result);
+        // Final result IDs collected
         Ok(result)
     } else {
-        eprintln!("DEBUG: No types specified in filter, returning empty");
+        // No types specified in filter, returning empty
         Ok(Vec::new())
     }
 }
@@ -11439,9 +11418,8 @@ pub async fn update_working_commit_instance<S: WorkingCommitStore + Store + Bran
                             instance.relationships.insert(key, value);
                         }
                     }
-                    Err(e) => {
-                        eprintln!("Failed to deserialize relationships: {}", e);
-                        eprintln!("Raw relationships JSON: {}", relationships);
+                    Err(_e) => {
+                        // Failed to deserialize relationships
                         // Continue processing other fields instead of failing the entire request
                     }
                 }
@@ -12082,7 +12060,7 @@ pub async fn list_working_commit_instances<S: WorkingCommitStore + Store + Branc
 pub async fn get_working_commit_instance<S: WorkingCommitStore + Store + BranchStore>(
     State(store): State<AppState<S>>,
     Path((db_id, branch_name, instance_id)): Path<(Id, String, Id)>,
-    Query(query): Query<ExpandQuery>,
+    Query(_query): Query<ExpandQuery>,
 ) -> Result<Json<serde_json::Value>, (StatusCode, Json<ErrorResponse>)> {
     // Verify branch belongs to database
     if let Err(e) = verify_branch_exists(&*store, &db_id, &branch_name).await {
@@ -12109,12 +12087,12 @@ pub async fn get_working_commit_instance<S: WorkingCommitStore + Store + BranchS
         .find(|i| i.id == instance_id)
     {
         // Support expansion like regular instance endpoint
-        let expand_rels = query
+        let _expand_rels = _query
             .expand
             .as_ref()
             .map(|s| s.split(',').map(|s| s.to_string()).collect::<Vec<_>>())
             .unwrap_or_default();
-        let depth = query.depth.unwrap_or(0);
+        let _depth = _query.depth.unwrap_or(0);
 
         match Expander::expand_instance(instance, &instances, &schema).await {
             Ok(expanded) => Ok(Json(serde_json::to_value(expanded).unwrap())),
@@ -12155,7 +12133,7 @@ pub async fn query_working_commit_instance_configuration<
 pub async fn get_working_commit_instance_query<S: WorkingCommitStore + Store + BranchStore>(
     State(store): State<AppState<S>>,
     Path((db_id, branch_name, instance_id)): Path<(Id, String, Id)>,
-    Query(params): Query<std::collections::HashMap<String, String>>,
+    Query(_params): Query<std::collections::HashMap<String, String>>,
 ) -> Result<Json<serde_json::Value>, (StatusCode, Json<ErrorResponse>)> {
     // For GET requests, we'll return basic instance data instead of complex query results
     // No expansion for this endpoint
@@ -12232,13 +12210,13 @@ pub async fn get_default_branch_working_commit_instance<
 >(
     State(store): State<AppState<S>>,
     Path((db_id, instance_id)): Path<(Id, Id)>,
-    Query(query): Query<ExpandQuery>,
+    Query(_query): Query<ExpandQuery>,
 ) -> Result<Json<serde_json::Value>, (StatusCode, Json<ErrorResponse>)> {
     let main_branch_name = get_main_branch_name(&*store, &db_id).await?;
     get_working_commit_instance(
         State(store),
         Path((db_id, main_branch_name, instance_id)),
-        Query(query),
+        Query(_query),
     )
     .await
 }

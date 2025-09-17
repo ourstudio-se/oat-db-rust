@@ -11,8 +11,8 @@ async fn main() -> anyhow::Result<()> {
     // Load environment variables from .env file if it exists
     dotenvy::dotenv().ok();
 
-    // Initialize logging
-    env_logger::init();
+    // Initialize logging with INFO level only (suppress DEBUG logs)
+    env_logger::Builder::from_env(env_logger::Env::default().default_filter_or("info")).init();
 
     println!("OAT-DB: Combinatorial Database Server");
 
@@ -27,8 +27,8 @@ async fn main() -> anyhow::Result<()> {
     let database_url = config.database_url()?;
     let postgres_store = PostgresStore::new(&database_url).await?;
 
-    println!("Skipping database migrations (already applied manually)...");
-    // postgres_store.migrate().await?;
+    println!("Running database migrations...");
+    postgres_store.migrate().await?;
     println!("Database ready with git-like schema");
 
     let store = Arc::new(postgres_store);

@@ -191,10 +191,7 @@ pub async fn get_merge_status<S: WorkingCommitStore>(
         .await
     {
         Ok(working_commits) => {
-            eprintln!("DEBUG: Found {} working commits for branch {}/{}", working_commits.len(), db_id, branch_name);
-            for wc in &working_commits {
-                eprintln!("DEBUG: Working commit {} - status: {:?}, has_merge_state: {}", wc.id, wc.status, wc.merge_state.is_some());
-            }
+            // Found working commits for branch
             
             // Find the most recent working commit with merge state (status should be Merging)
             // Sort by updated_at to get the most recent first

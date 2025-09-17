@@ -264,57 +264,18 @@ impl BranchOperations {
     }
 
     async fn perform_merge<S: Store>(
-        store: &S,
-        source_branch: &Branch,
-        target_branch: &Branch,
+        _store: &S,
+        _source_branch: &Branch,
+        _target_branch: &Branch,
         _author: Option<String>,
     ) -> Result<MergeResult> {
         // TODO: Update for new commit-based architecture - branch operations currently disabled
-        return Err(anyhow::anyhow!("Merge operations disabled pending commit-based architecture update"));
-        
-        let mut merged_instances = 0;
-        let mut merged_schema_changes = false;
-
-        // Merge schema (source takes precedence)
-        if let Some(source_schema) = store.get_schema(&source_branch.database_id, &source_branch.name).await? {
-            let mut target_schema = source_schema.clone();
-            // target_schema.branch_id = target_branch.name.clone(); // branch_id field removed
-            // store.upsert_schema(target_schema).await?; // upsert_schema method removed
-            merged_schema_changes = true;
-        }
-
-        // Merge instances (source takes precedence for conflicts)
-        let source_instances = store
-            .list_instances_for_branch(&source_branch.database_id, &source_branch.name, None)
-            .await?;
-        for mut instance in source_instances {
-            // instance.branch_id = target_branch.name.clone(); // branch_id field removed
-            // store.upsert_instance(instance).await?; // upsert_instance method removed
-            merged_instances += 1;
-        }
-
-        Ok(MergeResult {
-            success: true,
-            conflicts: Vec::new(),
-            merged_instances,
-            merged_schema_changes,
-        })
+        Err(anyhow::anyhow!("Merge operations disabled pending commit-based architecture update"))
     }
 
-    async fn cleanup_branch_data<S: Store>(store: &S, database_id: &Id, branch_name: &str) -> Result<()> {
+    async fn cleanup_branch_data<S: Store>(_store: &S, _database_id: &Id, _branch_name: &str) -> Result<()> {
         // TODO: Update for new commit-based architecture - branch cleanup currently disabled
-        return Err(anyhow::anyhow!("Branch cleanup operations disabled pending commit-based architecture update"));
-        
-        // Delete schema for this branch
-        // store.delete_schema_for_branch(branch_id).await?; // delete_schema_for_branch method removed
-
-        // Delete all instances for this branch
-        let instances = store.list_instances_for_branch(database_id, branch_name, None).await?;
-        for instance in instances {
-            // store.delete_instance(&instance.id).await?; // delete_instance method removed
-        }
-
-        Ok(())
+        Err(anyhow::anyhow!("Branch cleanup operations disabled pending commit-based architecture update"))
     }
 
     /// Detect validation conflicts that would occur after merge
@@ -633,100 +594,21 @@ impl BranchOperations {
 
     /// Perform the actual rebase operation
     async fn perform_rebase<S: Store>(
-        store: &S,
-        feature_branch: &Branch,
-        target_branch: &Branch,
-        author: Option<String>,
+        _store: &S,
+        _feature_branch: &Branch,
+        _target_branch: &Branch,
+        _author: Option<String>,
     ) -> Result<RebaseResult> {
         // TODO: Update for new commit-based architecture - rebase operations currently disabled
-        return Err(anyhow::anyhow!("Rebase operations disabled pending commit-based architecture update"));
-        let mut rebased_instances = 0;
-        let mut rebased_schema_changes = false;
-
-        // Step 1: Update feature branch to point to target branch as parent
-        let mut updated_feature_branch = feature_branch.clone();
-        updated_feature_branch.parent_branch_name = Some(target_branch.name.clone());
-        updated_feature_branch.current_commit_hash = crate::model::generate_id(); // New commit hash
-        updated_feature_branch.commit_message = Some(format!(
-            "Rebased '{}' onto '{}'",
-            feature_branch.name, target_branch.name
-        ));
-        if let Some(author) = &author {
-            updated_feature_branch.author = Some(author.clone());
-        }
-
-        // Step 2: Copy target branch schema as base, then apply feature branch changes
-        if let Some(target_schema) = store.get_schema(&target_branch.database_id, &target_branch.name).await? {
-            if let Some(feature_schema) = store.get_schema(&feature_branch.database_id, &feature_branch.name).await? {
-                // Create rebased schema by merging target base with feature changes
-                let rebased_schema =
-                    Self::merge_schemas(target_schema, feature_schema, &updated_feature_branch.name);
-                // store.upsert_schema(rebased_schema).await?; // upsert_schema method removed
-                rebased_schema_changes = true;
-            } else {
-                // No feature schema, just copy target schema to feature branch
-                let mut rebased_schema = target_schema;
-                // rebased_schema.branch_id = updated_feature_branch.name.clone(); // branch_id field removed
-                // store.upsert_schema(rebased_schema).await?; // upsert_schema method removed
-                rebased_schema_changes = true;
-            }
-        }
-
-        // Step 3: Copy target branch instances as base, then apply feature branch changes
-        let target_instances = store
-            .list_instances_for_branch(&target_branch.database_id, &target_branch.name, None)
-            .await?;
-        let feature_instances = store
-            .list_instances_for_branch(&feature_branch.database_id, &feature_branch.name, None)
-            .await?;
-
-        // Create a map of target instances
-        let target_instance_map: std::collections::HashMap<String, Instance> = target_instances
-            .into_iter()
-            .map(|i| (i.id.clone(), i))
-            .collect();
-
-        // Delete all existing instances in feature branch
-        let existing_feature_instances = store
-            .list_instances_for_branch(&feature_branch.database_id, &feature_branch.name, None)
-            .await?;
-        for instance in existing_feature_instances {
-            // store.delete_instance(&instance.id).await?; // delete_instance method removed
-        }
-
-        // Add target instances to feature branch (as base)
-        for (_, mut instance) in target_instance_map {
-            // instance.branch_id = updated_feature_branch.name.clone(); // branch_id field removed
-            // store.upsert_instance(instance).await?; // upsert_instance method removed
-            rebased_instances += 1;
-        }
-
-        // Apply feature branch changes (feature instances override target instances)
-        for mut feature_instance in feature_instances {
-            // feature_instance.branch_id = updated_feature_branch.name.clone(); // branch_id field removed
-            // store.upsert_instance(feature_instance).await?; // upsert_instance method removed
-        }
-
-        // Step 4: Update the branch record
-        store.upsert_branch(updated_feature_branch).await?;
-
-        Ok(RebaseResult {
-            success: true,
-            conflicts: Vec::new(),
-            message: format!(
-                "Successfully rebased '{}' onto '{}'",
-                feature_branch.name, target_branch.name
-            ),
-            rebased_instances,
-            rebased_schema_changes,
-        })
+        Err(anyhow::anyhow!("Rebase operations disabled pending commit-based architecture update"))
     }
 
     /// Merge two schemas, with feature schema changes taking precedence
+    #[allow(dead_code)]
     fn merge_schemas(
         mut target_schema: crate::model::Schema,
         feature_schema: crate::model::Schema,
-        new_branch_name: &str,
+        _new_branch_name: &str,
     ) -> crate::model::Schema {
         // target_schema.branch_id = new_branch_name.clone(); // branch_id field removed
         target_schema.description = feature_schema.description.or(target_schema.description);

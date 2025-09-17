@@ -36,8 +36,11 @@ COPY Cargo.toml Cargo.lock ./
 COPY src ./src
 COPY migrations ./migrations
 
-# Skip SQLx compile-time verification in Docker builds
-ENV DATABASE_URL=postgres://user:pass@localhost/db
+# Copy SQLx offline data for compile-time verification
+COPY .sqlx ./.sqlx
+
+# Enable SQLx offline mode for Docker builds
+ENV SQLX_OFFLINE=true
 
 # Build the application
 RUN cargo build --release

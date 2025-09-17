@@ -9,6 +9,7 @@ use chrono::Utc;
 use std::collections::HashMap;
 
 /// Helper function to create ClassDef with system audit info
+#[allow(dead_code)]
 fn create_system_class(
     id: Id,
     name: String,
@@ -37,6 +38,7 @@ fn create_system_class(
 }
 
 /// Helper function to create Instance with system audit info
+#[allow(dead_code)]
 fn create_system_instance(
     id: Id,
     class_id: Id,
@@ -61,6 +63,7 @@ fn create_system_instance(
 }
 
 /// Helper function to complete ClassDef with system audit info
+#[allow(dead_code)]
 fn create_system_class_full(mut class_def: ClassDef) -> ClassDef {
     let now = Utc::now();
     let system_user = "system".to_string();
@@ -74,6 +77,7 @@ fn create_system_class_full(mut class_def: ClassDef) -> ClassDef {
 }
 
 /// Helper function to complete Instance with system audit info  
+#[allow(dead_code)]
 fn create_system_instance_full(mut instance: Instance) -> Instance {
     let now = Utc::now();
     let system_user = "system".to_string();
@@ -88,7 +92,7 @@ fn create_system_instance_full(mut instance: Instance) -> Instance {
 
 pub async fn load_seed_data<S: Store>(store: &S) -> Result<()> {
     // Load original furniture catalog data
-    let (database_id, main_branch_id) = create_database_and_main_branch(store).await?;
+    let (_database_id, main_branch_id) = create_database_and_main_branch(store).await?;
 
     // Load main branch data
     load_schema(store, &main_branch_id).await?;
@@ -136,9 +140,9 @@ async fn create_database_and_main_branch<S: Store>(store: &S) -> Result<(Id, Id)
     Ok((database_id, branch_name))
 }
 
-async fn load_schema<S: Store>(store: &S, branch_id: &Id) -> Result<()> {
+async fn load_schema<S: Store>(_store: &S, _branch_id: &Id) -> Result<()> {
     // Schema with multiple class definitions
-    let furniture_schema = Schema {
+    let _furniture_schema = Schema {
         id: "FurnitureCatalogSchema".to_string(),
         // branch_id removed in commit-based architecture
         description: Some(
@@ -337,9 +341,9 @@ async fn load_schema<S: Store>(store: &S, branch_id: &Id) -> Result<()> {
 
     // TODO: Schema updates must be done through working commits in new architecture
     // For now, this seed data function is disabled
-    return Err(anyhow::anyhow!(
-        "Seed data must be updated to use working commit system"
-    ));
+    // return Err(anyhow::anyhow!(
+    //     "Seed data must be updated to use working commit system"
+    // ));
     // store.upsert_schema(furniture_schema).await?;
 
     // Add Component and Painting classes to the schema
@@ -531,12 +535,9 @@ async fn load_schema<S: Store>(store: &S, branch_id: &Id) -> Result<()> {
 
     // TODO: Schema updates must be done through working commits in new architecture
     // For now, this seed data function is disabled
-    return Err(anyhow::anyhow!(
+    Err(anyhow::anyhow!(
         "Seed data must be updated to use working commit system"
-    ));
-    // store.upsert_schema(extended_schema).await?;
-
-    Ok(())
+    ))
 }
 
 #[allow(dead_code)]
@@ -2130,6 +2131,7 @@ async fn load_feature_instances<S: Store>(_store: &S, _branch_id: &Id) -> Result
 
 /// Load furniture workflow data that matches the Postman collection
 /// This creates a complete dining table configuration scenario
+#[allow(dead_code)]
 async fn load_furniture_workflow_data<S: Store>(store: &S) -> Result<()> {
     // Check if furniture-db already exists to avoid overwriting user changes
     if let Ok(Some(_)) = store.get_database(&"furniture-db".to_string()).await {
@@ -2157,28 +2159,17 @@ async fn load_furniture_workflow_data<S: Store>(store: &S) -> Result<()> {
     store.upsert_branch(main_branch).await?;
 
     // Create the kitchen schema
-    let kitchen_schema = create_kitchen_schema(branch_name.clone()).await?;
+    let _kitchen_schema = create_kitchen_schema(branch_name.clone()).await?;
     // TODO: Schema updates must be done through working commits in new architecture
     // For now, this seed data function is disabled
-    return Err(anyhow::anyhow!(
+    Err(anyhow::anyhow!(
         "Seed data must be updated to use working commit system"
-    ));
-    // store.upsert_schema(kitchen_schema).await?;
-
-    // Create all instances
-    create_kitchen_instances(store, &branch_name).await?;
-
-    println!("✅ Furniture workflow data loaded successfully!");
-    println!("   Database: furniture-db");
-    println!("   Schema: kitchen-schema with Table, Chair, Color, Option classes");
-    println!("   Instances: Oak dining table with 4 chairs, red color, and service options");
-    println!("   🎯 Perfect for debugging your ILP solver with real pool-based relationships!");
-
-    Ok(())
+    ))
 }
 
 /// Create the kitchen schema with all classes
-async fn create_kitchen_schema(branch_name: String) -> Result<Schema> {
+#[allow(dead_code)]
+async fn create_kitchen_schema(_branch_name: String) -> Result<Schema> {
     let mut schema = Schema {
         id: "kitchen-schema".to_string(),
         // branch_id field removed in commit-based architecture

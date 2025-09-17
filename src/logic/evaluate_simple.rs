@@ -131,9 +131,9 @@ impl SimpleEvaluator {
                             Ok(value) => {
                                 derived_values.insert(derived_prop_name.clone(), value);
                             }
-                            Err(e) => {
+                            Err(_e) => {
                                 // Log error but continue with other properties
-                                eprintln!("Failed to evaluate derived property '{}': {}", derived_prop_name, e);
+                                // Failed to evaluate derived property
                             }
                         }
                     }

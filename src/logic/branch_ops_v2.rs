@@ -175,15 +175,6 @@ impl BranchOperationsV2 {
         working_commit.updated_at = created_wc.updated_at.clone();
 
         // Update with all our merge-specific data
-        eprintln!(
-            "DEBUG: Updating working commit {} with merge state",
-            working_commit.id
-        );
-        eprintln!(
-            "DEBUG: Status: {:?}, Has merge_state: {}",
-            working_commit.status,
-            working_commit.merge_state.is_some()
-        );
 
         store
             .update_working_commit(working_commit.clone())
@@ -192,9 +183,8 @@ impl BranchOperationsV2 {
 
         // Verify the working commit was properly saved with merge state
         match store.get_working_commit(&created_wc.id).await? {
-            Some(wc) => {
-                eprintln!("DEBUG: Verified working commit {} exists with status: {:?}, has merge_state: {}", 
-                    wc.id, wc.status, wc.merge_state.is_some());
+            Some(_wc) => {
+                // Verified working commit exists
             }
             None => {
                 return Err(anyhow!(
@@ -391,8 +381,8 @@ impl BranchOperationsV2 {
     fn apply_resolutions_to_merge(
         left_diff: crate::model::merge::CommitDiff,
         right_diff: crate::model::merge::CommitDiff,
-        conflicts: &[crate::model::merge::MergeConflict],
-        resolutions: &HashMap<usize, ConflictResolution>,
+        _conflicts: &[crate::model::merge::MergeConflict],
+        _resolutions: &HashMap<usize, ConflictResolution>,
     ) -> Result<crate::model::merge::MergeResult> {
         // This is a simplified implementation
         // In a real system, you'd need to carefully apply each resolution

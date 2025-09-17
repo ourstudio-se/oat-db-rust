@@ -7,11 +7,27 @@ pub mod model;
 pub mod seed;
 pub mod store;
 
-pub use api::*;
-pub use logic::*;
+// Export API types
+pub use api::routes;
+pub use api::handlers;
+
+// Export logic types (excluding conflicting merge types)
+pub use logic::{
+    SimpleValidator, SimpleEvaluator, Expander, BranchOperationsV2,
+    PoolResolver, SelectionResult, SolvePipeline, SolvePipelineWithStore,
+    filter_instances, ValidationResult, ValidationError, ValidationWarning,
+    ValidationErrorType, ValidationWarningType,
+    MergeValidationResult
+};
+
+// Export all model types
 pub use model::*;
+
+// Export seed module
 pub use seed::*;
-pub use store::*;
+
+// Export store types
+pub use store::{Store, PostgresStore};
 
 // Function for integration testing
 pub async fn run_server() -> anyhow::Result<()> {
@@ -22,8 +38,8 @@ pub async fn run_server() -> anyhow::Result<()> {
     // Load environment variables from .env file if it exists
     dotenvy::dotenv().ok();
     
-    // Initialize logging
-    env_logger::init();
+    // Initialize logging with INFO level only (suppress DEBUG logs)
+    let _ = env_logger::Builder::from_env(env_logger::Env::default().default_filter_or("info")).try_init();
 
     // Load configuration
     let config = crate::config::AppConfig::load()?;
@@ -48,7 +64,7 @@ pub async fn run_server() -> anyhow::Result<()> {
     Ok(())
 }
 
-#[cfg(all(test, feature = "enable-broken-tests"))]
+#[cfg(test)]
 mod tests {
     use super::*;
     use std::sync::Arc;
@@ -170,7 +186,7 @@ mod tests {
         // instances reference the same IDs that exist in feature branch, causing validation 
         // to find instances in wrong branches
         if result.is_err() {
-            eprintln!("Validation failed (expected due to cross-branch reference issues): {:?}", result);
+            // Validation failed (expected due to cross-branch reference issues)
             // This is actually correct behavior - cross-branch references should fail validation
             return;
         }
@@ -402,8 +418,7 @@ mod tests {
         // Validate the instance - this should produce errors for non-existent references
         let result = SimpleValidator::validate_instance(&*store, &instance, &schema).await.unwrap();
 
-        // Debug output
-        eprintln!("Validation result: {:#?}", result);
+        // Debug output removed
 
         // The validation should find errors for non-existent relationship targets
         assert!(!result.valid, "Validation should fail for non-existent relationship targets");
@@ -432,35 +447,16 @@ mod tests {
         let branches = store.list_versions_for_database(&database.id).await.unwrap();
         let main_branch = branches.iter().find(|b| b.name == "main").unwrap();
 
-        eprintln!("=== DEBUGGING INSTANCE STORAGE ===");
-        eprintln!("Main branch ID: {}", main_branch.id);
-        
         // Check all instances in the store directly
         let all_instances = store.list_instances_for_branch(&main_branch.id, None).await.unwrap();
-        eprintln!("Total instances in main branch: {}", all_instances.len());
-        for instance in &all_instances {
-            eprintln!("  - {} (class: {})", instance.id, instance.class_id);
-        }
-
+        
         // Check if specific instances exist
         let size_medium = store.get_instance(&"size-medium".to_string()).await.unwrap();
-        eprintln!("size-medium exists: {}", size_medium.is_some());
-        if let Some(inst) = &size_medium {
-            eprintln!("  Branch: {}, Class: {}", inst.branch_id, inst.class_id);
-        }
-
         let leg_wooden = store.get_instance(&"leg-wooden".to_string()).await.unwrap();
-        eprintln!("leg-wooden exists: {}", leg_wooden.is_some());
-        if let Some(inst) = &leg_wooden {
-            eprintln!("  Branch: {}, Class: {}", inst.branch_id, inst.class_id);
-        }
 
         // Now run validation and see what happens
         let validation_result = logic::SimpleValidator::validate_branch(&*store, &main_branch.id).await.unwrap();
-        eprintln!("Validation result: valid={}, errors={}, warnings={}", 
-                 validation_result.valid, 
-                 validation_result.errors.len(),
-                 validation_result.warnings.len());
+        // Validation result checked
 
         // The test should now help us understand what's really happening
         assert!(validation_result.instance_count >= 1, "Should validate at least the delux-underbed instance");
@@ -612,12 +608,12 @@ mod tests {
 
         // Validate the painting - should pass validation
         let validation_result = SimpleValidator::validate_instance(&*store, &painting1, &schema).await.unwrap();
-        eprintln!("Painting1 validation result: {:#?}", validation_result);
+        // Painting1 validation checked
         assert!(validation_result.valid, "Painting with valid relationships should pass validation");
 
         // Test the conditional property evaluation
         let price_value = crate::logic::SimpleEvaluator::get_property_value(&painting1, "price").unwrap();
-        eprintln!("Painting1 price evaluation: {:#?}", price_value);
+        // Painting1 price evaluation checked
         assert_eq!(price_value, serde_json::Value::Number(serde_json::Number::from_f64(100.0).unwrap()), 
                    "Price should be 100.0 when 'a' and 'b' relationships are present");
 
@@ -642,7 +638,7 @@ mod tests {
         };
 
         let price_value2 = crate::logic::SimpleEvaluator::get_property_value(&painting2, "price").unwrap();
-        eprintln!("Painting2 price evaluation: {:#?}", price_value2);
+        // Painting2 price evaluation checked
         assert_eq!(price_value2, serde_json::Value::Number(serde_json::Number::from_f64(110.0).unwrap()), 
                    "Price should be 110.0 when 'a' and 'c' relationships are present");
 
@@ -663,11 +659,11 @@ mod tests {
         };
 
         let price_value3 = crate::logic::SimpleEvaluator::get_property_value(&painting3, "price").unwrap();
-        eprintln!("Painting3 price evaluation: {:#?}", price_value3);
+        // Painting3 price evaluation checked
         assert_eq!(price_value3, serde_json::Value::Number(serde_json::Number::from(0)), 
                    "Price should default to 0 when neither condition is met");
         
-        eprintln!("✅ Conditional property functionality test passed!");
+        // Conditional property functionality test passed
     }
 
     #[tokio::test]
@@ -749,7 +745,6 @@ mod tests {
 
         // Validate - should fail because 'invalid_rel' is not defined in schema
         let validation_result = SimpleValidator::validate_instance(&*store, &painting, &schema).await.unwrap();
-        eprintln!("Invalid painting validation result: {:#?}", validation_result);
         
         assert!(!validation_result.valid, "Painting with invalid relationship reference should fail validation");
         assert!(!validation_result.errors.is_empty(), "Should have validation errors");
@@ -760,8 +755,6 @@ mod tests {
             .filter(|e| e.message.contains("invalid_rel"))
             .collect();
         assert!(!rel_errors.is_empty(), "Should have error about invalid_rel");
-        
-        eprintln!("✅ Conditional property validation test passed!");
     }
 
     #[tokio::test]
@@ -798,28 +791,21 @@ mod tests {
         
         match painting_result {
             Ok(painting) => {
-                eprintln!("✅ Successfully parsed JSON structure");
-                eprintln!("Painting ID: {}", painting.id);
-                eprintln!("Painting Class: {}", painting.class_id);
-                
                 // Verify the conditional property structure
                 if let Some(PropertyValue::Conditional(rule_set)) = painting.properties.get("price") {
                     let branches = match rule_set {
                         RuleSet::Simple { rules, .. } => rules,
                         RuleSet::Complex { branches, .. } => branches,
                     };
-                    eprintln!("Rule set has {} branches", branches.len());
-                    for (i, branch) in branches.iter().enumerate() {
-                        eprintln!("Rule {}: when={:?}, then={:?}", i + 1, branch.when, branch.then);
-                    }
+                    assert_eq!(branches.len(), 2, "Should have 2 rules");
                 } else {
                     panic!("Price property should be conditional");
                 }
 
                 // Verify relationships
-                eprintln!("Relationships: {:#?}", painting.relationships);
+                // Relationships validation checked
                 
-                eprintln!("✅ Painting JSON example test passed!");
+                // Painting JSON example test passed
             }
             Err(e) => {
                 panic!("Failed to parse JSON: {}", e);
@@ -850,7 +836,7 @@ mod tests {
 
         // Test 1: Car color relationship with default_pool = All
         let color_rel = car_class.relationships.iter().find(|r| r.id == "color").unwrap();
-        eprintln!("Color relationship default_pool: {:?}", color_rel.default_pool);
+        // Color relationship default_pool checked
         
         // Resolve effective pool for color relationship (should include all Color instances)
         let color_pool = PoolResolver::resolve_effective_pool(
@@ -859,14 +845,14 @@ mod tests {
             None, // No instance override - use schema default
         ).unwrap();
         
-        eprintln!("Color pool (default): {:?}", color_pool);
+        // Color pool (default) checked
         assert!(color_pool.contains(&"color-red".to_string()));
         assert!(color_pool.contains(&"color-blue".to_string()));
         assert!(color_pool.contains(&"color-gold".to_string()));
 
         // Test 2: Car freeOptions relationship with default_pool = None
         let options_rel = car_class.relationships.iter().find(|r| r.id == "freeOptions").unwrap();
-        eprintln!("FreeOptions relationship default_pool: {:?}", options_rel.default_pool);
+        // FreeOptions relationship default_pool checked
         
         // Resolve effective pool for freeOptions (should be empty)
         let options_pool = PoolResolver::resolve_effective_pool(
@@ -875,7 +861,7 @@ mod tests {
             None,
         ).unwrap();
         
-        eprintln!("Options pool (default): {:?}", options_pool);
+        // Options pool (default) checked
         assert!(options_pool.is_empty(), "FreeOptions should have empty default pool");
 
         // Test 3: Instance-level pool override (color with price filter)
@@ -894,7 +880,7 @@ mod tests {
             Some(&price_filter), // Instance override - only colors under $100
         ).unwrap();
         
-        eprintln!("Filtered color pool (price < 100): {:?}", filtered_color_pool);
+        // Filtered color pool (price < 100) checked
         // Should include red ($50) and blue ($75), but not gold ($150)
         // Note: This test might not work fully until filters are implemented in the store
         
@@ -906,10 +892,10 @@ mod tests {
             None, // No selection - should be unresolved since quantifier is Exactly(1)
         ).unwrap();
         
-        eprintln!("Color selection result: {:?}", color_selection);
+        // Color selection result checked
         match color_selection {
-            SelectionResult::Unresolved(_) => eprintln!("✅ Color selection correctly unresolved"),
-            SelectionResult::Resolved(_) => eprintln!("Color selection was resolved (unexpected for Exactly quantifier)"),
+            SelectionResult::Unresolved(_) => { /* Color selection correctly unresolved */ },
+            SelectionResult::Resolved(_) => { /* Color selection was resolved (unexpected for Exactly quantifier) */ },
         }
 
         // Test 5: Explicit selection from pool
@@ -921,16 +907,16 @@ mod tests {
             Some(&explicit_selection),
         ).unwrap();
         
-        eprintln!("Explicit selection result: {:?}", explicit_result);
+        // Explicit selection result checked
         match explicit_result {
             SelectionResult::Resolved(ids) => {
                 assert_eq!(ids, vec!["color-red".to_string()]);
-                eprintln!("✅ Explicit selection correctly resolved to red");
+                // Explicit selection correctly resolved to red
             }
             SelectionResult::Unresolved(_) => panic!("Explicit selection should be resolved"),
         }
 
-        eprintln!("✅ Pool resolution system test passed!");
+        // Pool resolution system test passed
     }
 
     #[tokio::test]
@@ -993,7 +979,7 @@ mod tests {
             }
         }
 
-        eprintln!("✅ Enhanced pool resolution examples test passed!");
+        // Enhanced pool resolution examples test passed
     }
 
     #[tokio::test]

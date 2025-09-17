@@ -1,5 +1,5 @@
 use crate::api::handlers::{AppState, ErrorResponse};
-use crate::logic::BranchOperations;
+use crate::logic::branch_ops::BranchOperations;
 use crate::store::traits::Store;
 use axum::{
     extract::{Path, State},

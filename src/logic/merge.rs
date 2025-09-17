@@ -377,7 +377,7 @@ impl MergeEngine {
             // Check against all right operations
             for (idx, right_op) in right_diff.operations.iter().enumerate() {
                 if let Some(conflict_type) = left_op.conflicts_with(right_op) {
-                    let (_, right_id) = right_op.resource_info();
+                    let (_, _right_id) = right_op.resource_info();
                     
                     // Create conflict description
                     let conflict = MergeConflict {

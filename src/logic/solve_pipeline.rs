@@ -265,7 +265,7 @@ impl<'a> SolvePipeline<'a> {
     /// Step 3: Setup Pldag model with topological sort
     fn setup_pldag_model(
         &self,
-        main_instance_id: &Id,
+        _main_instance_id: &Id,
         instances: &[Instance],
         schema: &Schema,
     ) -> Result<(Pldag, IdMappings)> {
@@ -457,6 +457,7 @@ impl<'a> SolvePipeline<'a> {
     }
 
     /// Solve with Pldag
+    #[allow(dead_code)]
     fn solve_with_pldag(
         &self,
         mut model: Pldag,

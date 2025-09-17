@@ -296,7 +296,7 @@ impl SimpleValidator {
     }
 
     async fn validate_instance_relationships<S: Store>(
-        store: &S,
+        _store: &S,
         instance: &Instance,
         class_def: &ClassDef,
         _schema: &Schema,
@@ -361,12 +361,8 @@ impl SimpleValidator {
                 .get(rel_key)
                 .or_else(|| schema_rels_by_id.get(rel_key));
 
-            if let Some(rel_def) = rel_def {
-                // DEBUG: Log what we're validating
-                eprintln!(
-                    "DEBUG: Validating relationship '{}': {:?}",
-                    rel_key, relationship_selection
-                );
+            if let Some(_rel_def) = rel_def {
+                // Validating relationship
 
                 // Extract the target IDs based on the RelationshipSelection type
                 let target_ids = match relationship_selection {
@@ -423,26 +419,9 @@ impl SimpleValidator {
                 // TODO: Validation logic needs branch_id parameter for new architecture
                 // For now, this validation is disabled until the validation system is updated
                 if !target_ids.is_empty() {
-                    eprintln!(
-                        "DEBUG: Would check if {} instances exist in current branch...",
-                        target_ids.len()
-                    );
+                    // Would check if instances exist in current branch
                 }
                 return;
-
-                // TODO: Validate quantifiers (Exactly, AtLeast, etc.)
-                // For now, we'll leave this as a future enhancement
-                if target_ids.is_empty() {
-                    result.warnings.push(ValidationWarning {
-                        instance_id: instance.id.clone(),
-                        warning_type: ValidationWarningType::RelationshipNotValidated,
-                        message: format!(
-                            "Relationship '{}' has no targets - quantifier validation not yet implemented",
-                            rel_key
-                        ),
-                        property_name: Some(rel_key.clone()),
-                    });
-                }
             }
         }
     }
