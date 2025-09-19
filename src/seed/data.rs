@@ -1,5 +1,5 @@
 use crate::model::{
-    Branch, ClassDef, DataType, Database, DefaultPool, DerivedDef, Domain, Expr, Id, Instance,
+    Base, Branch, ClassDef, DataType, Database, DefaultPool, DerivedDef, Domain, Expr, Id, Instance,
     PropertyDef, PropertyValue, Quantifier, RelationshipDef, RelationshipSelection, Schema,
     SelectionType,
 };
@@ -30,6 +30,7 @@ fn create_system_class(
         relationships,
         derived,
         domain_constraint,
+        base: Base::default(),
         created_by: system_user.clone(),
         created_at: now,
         updated_by: system_user,
@@ -223,6 +224,7 @@ async fn load_schema<S: Store>(_store: &S, _branch_id: &Id) -> Result<()> {
                     fn_short: None,
                 }],
                 domain_constraint: Domain::binary(), // Each Underbed instance defaults to domain [0,1]
+                base: Base::default(),
                 created_by: "seed-data".to_string(),
                 created_at: chrono::Utc::now(),
                 updated_by: "seed-data".to_string(),
@@ -259,6 +261,7 @@ async fn load_schema<S: Store>(_store: &S, _branch_id: &Id) -> Result<()> {
                 relationships: vec![],
                 derived: vec![],
                 domain_constraint: Domain::constant(1), // Each Size instance defaults to domain [1,1] (always selected)
+                base: Base::default(),
                 created_by: "seed-data".to_string(),
                 created_at: chrono::Utc::now(),
                 updated_by: "seed-data".to_string(),
@@ -295,6 +298,7 @@ async fn load_schema<S: Store>(_store: &S, _branch_id: &Id) -> Result<()> {
                 relationships: vec![],
                 derived: vec![],
                 domain_constraint: Domain::new(0, 10), // Each Fabric instance defaults to domain [0,10]
+                base: Base::default(),
                 created_by: "seed-data".to_string(),
                 created_at: chrono::Utc::now(),
                 updated_by: "seed-data".to_string(),
@@ -331,6 +335,7 @@ async fn load_schema<S: Store>(_store: &S, _branch_id: &Id) -> Result<()> {
                 relationships: vec![],
                 derived: vec![],
                 domain_constraint: Domain::new(0, 4), // Each Leg instance defaults to domain [0,4]
+                base: Base::default(),
                 created_by: "seed-data".to_string(),
                 created_at: chrono::Utc::now(),
                 updated_by: "seed-data".to_string(),
@@ -1741,6 +1746,7 @@ async fn load_feature_schema<S: Store>(store: &S, branch_id: &Id) -> Result<()> 
                 relationships: vec![],
                 derived: vec![],
                 domain_constraint: Domain::new(0, 4), // Each Leg instance defaults to domain [0,4]
+                base: Base::default(),
                 created_by: "seed-data".to_string(),
                 created_at: chrono::Utc::now(),
                 updated_by: "seed-data".to_string(),

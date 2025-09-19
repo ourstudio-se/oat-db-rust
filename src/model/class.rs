@@ -2,6 +2,45 @@ use crate::model::{DerivedDef, Domain, Id, PropertyDef, RelationshipDef};
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 
+/// Base operation types for class constraints
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum BaseOp {
+    /// All constraints must be satisfied
+    All,
+    /// Any constraint must be satisfied
+    Any,
+    /// At least N constraints must be satisfied
+    AtLeast,
+    /// At most N constraints must be satisfied
+    AtMost,
+    /// Exactly N constraints must be satisfied
+    Exactly,
+    /// If first then second (implication)
+    Imply,
+    /// First if and only if second (equivalence)
+    Equiv,
+}
+
+/// Base constraint configuration for a class
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct Base {
+    /// The operation type
+    pub op: BaseOp,
+    /// Optional value parameter (required for AtLeast, AtMost, Exactly)
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub val: Option<i32>,
+}
+
+impl Default for Base {
+    fn default() -> Self {
+        Self {
+            op: BaseOp::All,
+            val: None,
+        }
+    }
+}
+
 /// Default user for legacy data migration
 fn default_user() -> String {
     "legacy-user".to_string()
@@ -39,6 +78,11 @@ pub struct ClassDef {
     /// Every class must have a domain since all decision variables need a domain
     #[serde(default = "Domain::binary")]
     pub domain_constraint: Domain,
+
+    /// Base constraint configuration for this class
+    /// Defaults to {"op": "all", "val": null} for backward compatibility
+    #[serde(default)]
+    pub base: Base,
 
     /// Audit fields for tracking who created/modified this class
     #[serde(default = "default_user")]
@@ -78,6 +122,11 @@ pub struct NewClassDef {
     /// Every class must have a domain since all decision variables need a domain
     #[serde(default = "Domain::binary")]
     pub domain_constraint: Domain,
+
+    /// Base constraint configuration for this class
+    /// Defaults to {"op": "all", "val": null} for backward compatibility
+    #[serde(default)]
+    pub base: Base,
 }
 
 /// Class definition update model for PATCH operations
@@ -107,6 +156,10 @@ pub struct ClassDefUpdate {
     /// Domain constraint for instances of this class (defines allowed lower/upper bounds)
     #[serde(skip_serializing_if = "Option::is_none")]
     pub domain_constraint: Option<Domain>,
+
+    /// Base constraint configuration for this class
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub base: Option<Base>,
 }
 
 impl Default for ClassDef {
@@ -122,6 +175,7 @@ impl Default for ClassDef {
             derived: Vec::new(),
             description: None,
             domain_constraint: Domain::binary(),
+            base: Base::default(),
             created_by: system_user.clone(),
             created_at: now,
             updated_by: system_user,
@@ -142,6 +196,7 @@ impl ClassDef {
             derived: new_class.derived,
             description: new_class.description,
             domain_constraint: new_class.domain_constraint,
+            base: new_class.base,
             created_by: user_id.clone(),
             created_at: now,
             updated_by: user_id,
@@ -168,6 +223,9 @@ impl ClassDef {
         }
         if let Some(domain_constraint) = update.domain_constraint {
             self.domain_constraint = domain_constraint;
+        }
+        if let Some(base) = update.base {
+            self.base = base;
         }
         
         // Update audit fields (preserve created_by/created_at)

@@ -1,3 +1,4 @@
+use crate::class;
 use crate::model::{
     generate_configuration_id, CommitData, ConfigurationArtifact, DefaultPool, Domain, Id,
     Instance, InstanceFilter, NewConfigurationArtifact, PipelinePhase, Quantifier, RelationshipDef,
@@ -61,11 +62,11 @@ impl<'a> SolvePipeline<'a> {
         let start_time = Instant::now();
 
         // Step 1: Get instances and schema from commit data
-        let instances = self.commit_data.instances.clone();
+        let all_instances = self.commit_data.instances.clone();
         let schema = &self.commit_data.schema;
 
         // Find target instance (just validate it exists)
-        let _target_instance = instances
+        let _target_instance = all_instances
             .iter()
             .find(|i| i.id == target_instance_id)
             .ok_or_else(|| {
@@ -73,14 +74,21 @@ impl<'a> SolvePipeline<'a> {
             })?
             .clone();
 
-        // Step 2: Resolve all pool filters and materialize relationships
+        // Step 2: Build dependency tree and filter instances early
+        let dependencies = self.get_instance_dependencies(&target_instance_id, &all_instances)?;
+        let instances: Vec<Instance> = all_instances
+            .into_iter()
+            .filter(|inst| dependencies.contains(&inst.id))
+            .collect();
+
+        // Step 3: Resolve all pool filters and materialize relationships for filtered instances
         let resolved_instances = self.resolve_all_relationships(instances, schema)?;
 
-        // Step 3: Setup Pldag model
+        // Step 4: Setup Pldag model (no longer needs to filter)
         let (model, id_mappings) =
             self.setup_pldag_model(&target_instance_id, &resolved_instances, schema)?;
 
-        // Step 4: Map all objectives and solve with Pldag (EFFICIENTLY)
+        // Step 5: Map all objectives and solve with Pldag (EFFICIENTLY)
         let solutions = self.solve_with_pldag_batch(
             model,
             id_mappings.get_pldag_id(&target_instance_id).unwrap(),
@@ -89,7 +97,7 @@ impl<'a> SolvePipeline<'a> {
             &id_mappings.pldag_to_our,
         )?;
 
-        // Step 5: Compile solutions into artifacts
+        // Step 6: Compile solutions into artifacts
         let mut results = Vec::new();
         let total_time = start_time.elapsed().as_millis() as u64;
 
@@ -262,7 +270,7 @@ impl<'a> SolvePipeline<'a> {
         })
     }
 
-    /// Step 3: Setup Pldag model with topological sort
+    /// Step 4: Setup Pldag model with topological sort
     fn setup_pldag_model(
         &self,
         _main_instance_id: &Id,
@@ -272,17 +280,17 @@ impl<'a> SolvePipeline<'a> {
         let mut model = Pldag::new();
         let mut id_mappings = IdMappings::new();
 
-        // Step 3.1: Topological sort based on relationships
+        // Step 4.1: Topological sort the instances
         let sorted_instances = self.topological_sort(instances)?;
 
-        // Step 3.2: Process instances in topological order
+        // Step 4.2: Process instances in topological order
         let mut composite_ids = HashSet::new();
         for instance in sorted_instances {
             let class_def = schema
                 .get_class_by_id(&instance.class_id)
                 .ok_or_else(|| anyhow::anyhow!("Class {} not found", instance.class_id))?;
 
-            // Step 3.3: Determine if instance is primitive or composite
+            // Step 4.3: Determine if instance is primitive or composite
             if instance.relationships.is_empty() || class_def.relationships.is_empty() {
                 // Primitive instance
                 let domain = if let Some(domain) = &instance.domain {
@@ -309,6 +317,45 @@ impl<'a> SolvePipeline<'a> {
         Ok((model, id_mappings))
     }
 
+    /// Get all dependencies of an instance (including transitive dependencies)
+    fn get_instance_dependencies(
+        &self,
+        target_id: &Id,
+        instances: &[Instance],
+    ) -> Result<HashSet<Id>> {
+        let mut dependencies = HashSet::new();
+        let mut to_process = VecDeque::new();
+
+        // Start with the target instance itself
+        dependencies.insert(target_id.clone());
+        to_process.push_back(target_id.clone());
+
+        // Build a map for quick instance lookup
+        let instance_map: HashMap<&Id, &Instance> =
+            instances.iter().map(|inst| (&inst.id, inst)).collect();
+
+        // Process dependencies breadth-first
+        while let Some(current_id) = to_process.pop_front() {
+            if let Some(instance) = instance_map.get(&current_id) {
+                // Add all relationship targets as dependencies
+                for selection in instance.relationships.values() {
+                    if let RelationshipSelection::SimpleIds(target_ids) = selection {
+                        for target_id in target_ids {
+                            if !dependencies.contains(target_id)
+                                && instance_map.contains_key(target_id)
+                            {
+                                dependencies.insert(target_id.clone());
+                                to_process.push_back(target_id.clone());
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        Ok(dependencies)
+    }
+
     /// Topological sort instances based on relationship dependencies
     fn topological_sort<'b>(&self, instances: &'b [Instance]) -> Result<Vec<&'b Instance>> {
         let mut in_degree: HashMap<&str, usize> = HashMap::new();
@@ -324,7 +371,7 @@ impl<'a> SolvePipeline<'a> {
 
         // Build dependency graph
         for instance in instances {
-            for (_, selection) in &instance.relationships {
+            for selection in instance.relationships.values() {
                 if let RelationshipSelection::SimpleIds(target_ids) = selection {
                     for target_id in target_ids {
                         if instance_map.contains_key(target_id.as_str()) {
@@ -435,7 +482,40 @@ impl<'a> SolvePipeline<'a> {
         } else if constraint_ids.len() == 1 {
             Ok(constraint_ids[0].clone())
         } else {
-            Ok(model.set_and(constraint_ids))
+            match class_def.base.op {
+                class::BaseOp::All => Ok(model.set_and(constraint_ids)),
+                class::BaseOp::Any => Ok(model.set_or(constraint_ids)),
+                class::BaseOp::AtLeast => Ok(model.set_atleast(
+                    constraint_ids.iter().map(|id| id.as_str()).collect(),
+                    class_def.base.val.unwrap_or(0) as i64,
+                )),
+                class::BaseOp::AtMost => Ok(model.set_atmost(
+                    constraint_ids.iter().map(|id| id.as_str()).collect(),
+                    class_def.base.val.unwrap_or(0) as i64,
+                )),
+                class::BaseOp::Exactly => Ok(model.set_equal(
+                    constraint_ids.iter().map(|id| id.as_str()).collect(),
+                    class_def.base.val.unwrap_or(0) as i64,
+                )),
+                class::BaseOp::Imply => {
+                    if constraint_ids.len() != 2 {
+                        Err(anyhow::anyhow!(
+                            "Imply operator requires exactly 2 constraints"
+                        ))
+                    } else {
+                        Ok(model.set_imply(&constraint_ids[0], &constraint_ids[1]))
+                    }
+                }
+                class::BaseOp::Equiv => {
+                    if constraint_ids.len() != 2 {
+                        Err(anyhow::anyhow!(
+                            "Equiv operator requires exactly 2 constraints"
+                        ))
+                    } else {
+                        Ok(model.set_equiv(&constraint_ids[0], &constraint_ids[1]))
+                    }
+                }
+            }
         }
     }
 
