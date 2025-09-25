@@ -69,6 +69,16 @@ impl Expander {
                 // No explicit relationship data - resolve using schema default pool
                 let resolved_relationship =
                     Self::resolve_relationship_from_schema(other_instances, rel_def).await?;
+
+                if resolved_relationship.materialized_ids.is_empty() {
+                    // Raise an error if no instances were resolved
+                    return Err(anyhow::anyhow!(
+                        "No instances resolved for relationship '{}' of instance '{}'. This may indicate a misconfiguration in the schema or that no instances exist in the target class.",
+                        relationship_name,
+                        instance.id
+                    ));
+                }
+
                 resolved_relationship
             };
 
@@ -306,7 +316,11 @@ impl Expander {
                     method,
                     Some(ResolutionDetails {
                         original_definition: Some(
-                            serde_json::to_value(selection).unwrap_or_default(),
+                            serde_json::to_value(&RelationshipSelection::PoolBased {
+                                pool: pool.clone(),
+                                selection: selection.clone(),
+                            })
+                            .unwrap_or_default(),
                         ),
                         resolved_from: Some(resolved_from),
                         filter_description: filter_desc,

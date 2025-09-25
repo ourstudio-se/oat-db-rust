@@ -277,14 +277,14 @@ pub fn create_router<S: Store + 'static>() -> Router<Arc<S>> {
             post(branch_handlers::delete_branch::<S>),
         )
         // Instance-specific query/solve endpoints
-        .route(
-            "/databases/:db_id/instances/:instance_id/query",
-            post(handlers::query_instance_configuration::<S>),
-        )
-        .route(
-            "/databases/:db_id/branches/:branch_id/instances/:instance_id/query",
-            post(handlers::query_branch_instance_configuration::<S>),
-        )
+        // .route(
+        //     "/databases/:db_id/instances/:instance_id/query",
+        //     post(handlers::query_instance_configuration::<S>),
+        // )
+        // .route(
+        //     "/databases/:db_id/branches/:branch_id/instances/:instance_id/query",
+        //     post(handlers::query_branch_instance_configuration::<S>),
+        // )
         // Batch query endpoints for multiple objectives
         .route(
             "/databases/:db_id/instances/:instance_id/batch-query",
@@ -295,14 +295,14 @@ pub fn create_router<S: Store + 'static>() -> Router<Arc<S>> {
             post(handlers::batch_query_branch_instance_configuration::<S>),
         )
         // GET query endpoints with URL parameters for solver objectives
-        .route(
-            "/databases/:db_id/branches/:branch_id/instances/:instance_id/query",
-            get(handlers::get_branch_instance_query::<S>),
-        )
-        .route(
-            "/databases/:db_id/commits/:commit_hash/instances/:instance_id/query",
-            get(handlers::get_commit_instance_query::<S>),
-        )
+        // .route(
+        //     "/databases/:db_id/branches/:branch_id/instances/:instance_id/query",
+        //     get(handlers::get_branch_instance_query::<S>),
+        // )
+        // .route(
+        //     "/databases/:db_id/commits/:commit_hash/instances/:instance_id/query",
+        //     get(handlers::get_commit_instance_query::<S>),
+        // )
         // Working Commit endpoints (staging changes before commit)
         .route(
             "/databases/:db_id/branches/:branch_id/working-commit",

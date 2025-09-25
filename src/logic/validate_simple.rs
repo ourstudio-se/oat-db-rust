@@ -421,7 +421,7 @@ impl SimpleValidator {
                 if !target_ids.is_empty() {
                     // Would check if instances exist in current branch
                 }
-                return;
+                // REMOVED EARLY RETURN - was preventing relationship validation from completing
             }
         }
     }

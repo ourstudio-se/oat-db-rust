@@ -19,6 +19,7 @@ pub enum DataType {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
 pub enum Quantifier {
+    One,
     Exactly(usize),
     AtLeast(usize),
     AtMost(usize),

@@ -21,47 +21,19 @@ impl<'a> SolvePipeline<'a> {
         Self { commit_data }
     }
 
-    /// Execute the solve pipeline for a specific instance (ILP-based approach)
-    pub fn solve_instance(
+    /// Execute the solve pipeline with multiple objective sets and derived properties
+    pub fn solve_instance_with_multiple_objectives_and_derived_properties(
         &self,
         request: NewConfigurationArtifact,
         target_instance_id: Id,
-    ) -> Result<ConfigurationArtifact> {
-        self.solve_instance_with_objectives(request, target_instance_id, HashMap::new())
-    }
-
-    /// Execute the solve pipeline with objectives for combinatorial search
-    pub fn solve_instance_with_objectives(
-        &self,
-        request: NewConfigurationArtifact,
-        target_instance_id: Id,
-        objectives: HashMap<String, f64>,
-    ) -> Result<ConfigurationArtifact> {
-        // Delegate to batch method with single objective set
-        let results = self.solve_instance_with_multiple_objectives(
-            request,
-            target_instance_id,
-            vec![("default".to_string(), objectives)],
-        )?;
-
-        // Extract the single result
-        results
-            .into_iter()
-            .next()
-            .map(|(_, artifact)| artifact)
-            .ok_or_else(|| anyhow::anyhow!("No solution returned from batch solve"))
-    }
-
-    /// Execute the solve pipeline with multiple objective sets for efficient batch solving
-    pub fn solve_instance_with_multiple_objectives(
-        &self,
-        request: NewConfigurationArtifact,
-        target_instance_id: Id,
-        objective_sets: Vec<(String, HashMap<String, f64>)>, // (objective_id, objectives)
+        objective_sets: Vec<(String, HashMap<String, f64>)>,
+        derived_properties: Option<Vec<String>>,
     ) -> Result<Vec<(String, ConfigurationArtifact)>> {
         let start_time = Instant::now();
+        let mut phase_timings = Vec::new();
 
         // Step 1: Get instances and schema from commit data
+        let phase_start = Instant::now();
         let all_instances = self.commit_data.instances.clone();
         let schema = &self.commit_data.schema;
 
@@ -73,22 +45,30 @@ impl<'a> SolvePipeline<'a> {
                 anyhow::anyhow!("Target instance {} not found in commit", target_instance_id)
             })?
             .clone();
+        phase_timings.push(("fetch_data", phase_start.elapsed()));
 
         // Step 2: Build dependency tree and filter instances early
+        let phase_start = Instant::now();
         let dependencies = self.get_instance_dependencies(&target_instance_id, &all_instances)?;
         let instances: Vec<Instance> = all_instances
             .into_iter()
             .filter(|inst| dependencies.contains(&inst.id))
             .collect();
+        phase_timings.push(("filter_dependencies", phase_start.elapsed()));
 
         // Step 3: Resolve all pool filters and materialize relationships for filtered instances
+        let phase_start = Instant::now();
         let resolved_instances = self.resolve_all_relationships(instances, schema)?;
+        phase_timings.push(("resolve_relationships", phase_start.elapsed()));
 
         // Step 4: Setup Pldag model (no longer needs to filter)
+        let phase_start = Instant::now();
         let (model, id_mappings) =
             self.setup_pldag_model(&target_instance_id, &resolved_instances, schema)?;
+        phase_timings.push(("setup_pldag", phase_start.elapsed()));
 
         // Step 5: Map all objectives and solve with Pldag (EFFICIENTLY)
+        let phase_start = Instant::now();
         let solutions = self.solve_with_pldag_batch(
             model,
             id_mappings.get_pldag_id(&target_instance_id).unwrap(),
@@ -96,20 +76,64 @@ impl<'a> SolvePipeline<'a> {
             &id_mappings,
             &id_mappings.pldag_to_our,
         )?;
+        phase_timings.push(("solve", phase_start.elapsed()));
+
+        // Step 5.5: Evaluate derived properties for all instances
+        let phase_start = Instant::now();
+        let instance_class = schema
+            .classes
+            .iter()
+            .find(|c| c.id == _target_instance.class_id)
+            .unwrap();
 
         // Step 6: Compile solutions into artifacts
         let mut results = Vec::new();
-        let total_time = start_time.elapsed().as_millis() as u64;
+        let elapsed = start_time.elapsed();
+        // Use microseconds for precision, then convert to milliseconds
+        // Ensure at least 1ms is reported even for very fast operations
+        let total_time = std::cmp::max(1, elapsed.as_micros() / 1000) as u64;
 
         for ((objective_id, _), solution) in objective_sets.iter().zip(solutions.iter()) {
-            let artifact = self.compile_artifact(
+            let mut artifact = self.compile_artifact(
                 request.clone(),
                 target_instance_id.clone(),
                 resolved_instances.clone(),
                 solution.clone(),
                 &id_mappings,
                 total_time,
+                &phase_timings,
             )?;
+
+            // Only calculate derived properties if requested
+            if let Some(requested_props) = &derived_properties {
+                if !requested_props.is_empty() {
+                    for derived_property in instance_class.derived.iter() {
+                        // Only calculate if this property was requested
+                        if requested_props.contains(&derived_property.name) {
+                            match &derived_property.fn_short {
+                                Some(short) => {
+                                    let derived_value = self.resolved_derived_property(
+                                        &_target_instance,
+                                        &resolved_instances,
+                                        solution,
+                                        short.method.as_str(),
+                                        &short.property,
+                                    );
+                                    if let Some(value) = derived_value {
+                                        let mut property_map = HashMap::new();
+                                        property_map.insert("value".to_string(), value.clone());
+                                        artifact
+                                            .derived_properties
+                                            .insert(derived_property.name.clone(), property_map);
+                                    }
+                                }
+                                None => continue,
+                            }
+                        }
+                    }
+                }
+            }
+
             results.push((objective_id.clone(), artifact));
         }
 
@@ -356,6 +380,84 @@ impl<'a> SolvePipeline<'a> {
         Ok(dependencies)
     }
 
+    fn resolved_derived_property(
+        &self,
+        instance: &Instance,
+        other_instances: &[Instance],
+        solution: &HashMap<String, i64>,
+        derivation_type: &str,
+        property_name: &str,
+    ) -> Option<serde_json::Value> {
+        // Placeholder for future implementation
+        if derivation_type == "sum" {
+            let dependencies = self
+                .get_instance_dependencies(&instance.id, other_instances)
+                .ok()?;
+
+            // Collect all property values to determine the type
+            let mut values = Vec::new();
+
+            for id in dependencies.iter() {
+                if let Some(inst) = other_instances.iter().find(|inst| &inst.id == id) {
+                    if let Some(prop_value) = inst.properties.get(property_name) {
+                        let value = match prop_value {
+                            crate::model::PropertyValue::Literal(typed_val) => {
+                                typed_val.value.clone()
+                            }
+                            crate::model::PropertyValue::Conditional(rule_set) => {
+                                // For conditional properties, evaluate the rule
+                                use crate::logic::evaluate_simple::SimpleEvaluator;
+                                SimpleEvaluator::evaluate_rule_set(rule_set, inst)
+                            }
+                        };
+                        if solution.get(&id.to_string()) >= Some(&1) {
+                            values.push(value.clone());
+                            println!("Included value from instance {}: {:?}", id, value);
+                        }
+                    }
+                }
+            }
+
+            if values.is_empty() {
+                return Some(serde_json::Value::Null);
+            }
+
+            // Determine the predominant type and perform appropriate operation
+            let has_string = values.iter().any(|v| v.is_string());
+
+            if has_string {
+                // String concatenation mode
+                let concatenated = values
+                    .into_iter()
+                    .filter_map(|v| match v {
+                        serde_json::Value::String(s) => Some(s),
+                        serde_json::Value::Number(n) => Some(n.to_string()),
+                        serde_json::Value::Bool(b) => Some(b.to_string()),
+                        serde_json::Value::Null => None, // Filter out null values
+                        _ => Some(serde_json::to_string(&v).unwrap_or_default()),
+                    })
+                    .collect::<Vec<String>>()
+                    .join(",");
+
+                return Some(serde_json::Value::String(concatenated));
+            } else {
+                // Numeric addition mode
+                let sum = values
+                    .into_iter()
+                    .map(|v| match v {
+                        serde_json::Value::Number(n) => n.as_f64().unwrap_or(0.0),
+                        serde_json::Value::Bool(true) => 1.0,
+                        serde_json::Value::Bool(false) => 0.0,
+                        _ => 0.0,
+                    })
+                    .sum::<f64>();
+
+                return Some(serde_json::json!(sum));
+            }
+        }
+        None
+    }
+
     /// Topological sort instances based on relationship dependencies
     fn topological_sort<'b>(&self, instances: &'b [Instance]) -> Result<Vec<&'b Instance>> {
         let mut in_degree: HashMap<&str, usize> = HashMap::new();
@@ -456,6 +558,16 @@ impl<'a> SolvePipeline<'a> {
 
                 // Create constraint based on quantifier
                 let constraint_id = match &rel_def.quantifier {
+                    Quantifier::One => {
+                        if pldag_vars.len() == 1 {
+                            // For a single variable with One quantifier, just use the variable itself
+                            // This allows it to work properly with base.op like Imply
+                            pldag_vars[0].to_string()
+                        } else {
+                            // For multiple variables, enforce exactly one must be selected
+                            model.set_equal(pldag_vars, 1)
+                        }
+                    }
                     Quantifier::AtLeast(n) => model.set_atleast(pldag_vars, *n as i64),
                     Quantifier::AtMost(n) => model.set_atmost(pldag_vars, *n as i64),
                     Quantifier::Exactly(n) => model.set_equal(pldag_vars, *n as i64),
@@ -639,6 +751,7 @@ impl<'a> SolvePipeline<'a> {
         solution: HashMap<String, i64>,
         id_mappings: &IdMappings,
         total_time_ms: u64,
+        phase_timings: &[(&str, std::time::Duration)],
     ) -> Result<ConfigurationArtifact> {
         // Update instance domains based on solution
         for instance in instances.iter_mut() {
@@ -668,28 +781,15 @@ impl<'a> SolvePipeline<'a> {
         // Set metadata
         artifact.solve_metadata = SolveMetadata {
             total_time_ms,
-            pipeline_phases: vec![
-                PipelinePhase {
-                    name: "fetch_data".to_string(),
-                    duration_ms: 0,
+            pipeline_phases: phase_timings
+                .iter()
+                .map(|(name, duration)| PipelinePhase {
+                    name: name.to_string(),
+                    // Convert duration to milliseconds, ensure at least 1ms for very fast operations
+                    duration_ms: std::cmp::max(1, duration.as_micros() / 1000) as u64,
                     details: None,
-                },
-                PipelinePhase {
-                    name: "resolve_relationships".to_string(),
-                    duration_ms: 0,
-                    details: None,
-                },
-                PipelinePhase {
-                    name: "setup_pldag".to_string(),
-                    duration_ms: 0,
-                    details: None,
-                },
-                PipelinePhase {
-                    name: "solve".to_string(),
-                    duration_ms: 0,
-                    details: None,
-                },
-            ],
+                })
+                .collect(),
             solver_info: Some(SolverInfo {
                 name: "pldag".to_string(),
                 version: None,
@@ -780,11 +880,12 @@ impl<'a, S: crate::store::traits::Store + crate::store::traits::CommitStore>
         ))
     }
 
-    /// Execute the solve pipeline for a specific instance (ILP-based approach)
+    /// Execute the solve pipeline with objectives for combinatorial search
     pub async fn solve_instance(
         &self,
         request: NewConfigurationArtifact,
         target_instance_id: Id,
+        objective: HashMap<String, f64>,
     ) -> Result<ConfigurationArtifact> {
         // Fetch the commit based on resolution context
         let commit = if let Some(commit_hash) = &request.resolution_context.commit_hash {
@@ -824,55 +925,18 @@ impl<'a, S: crate::store::traits::Store + crate::store::traits::CommitStore>
             .get_data()
             .map_err(|e| anyhow::anyhow!("Failed to read commit data: {}", e))?;
         let pipeline = SolvePipeline::new(&commit_data);
-        pipeline.solve_instance(request, target_instance_id)
-    }
-
-    /// Execute the solve pipeline with objectives for combinatorial search
-    pub async fn solve_instance_with_objectives(
-        &self,
-        request: NewConfigurationArtifact,
-        target_instance_id: Id,
-        objectives: HashMap<String, f64>,
-    ) -> Result<ConfigurationArtifact> {
-        // Fetch the commit based on resolution context
-        let commit = if let Some(commit_hash) = &request.resolution_context.commit_hash {
-            // Fetch specific commit
-            self.store
-                .get_commit(commit_hash)
-                .await?
-                .ok_or_else(|| anyhow::anyhow!("Commit {} not found", commit_hash))?
-        } else {
-            // Fetch current commit from branch
-            let branch = self
-                .store
-                .get_branch(
-                    &request.resolution_context.database_id,
-                    &request.resolution_context.branch_id,
-                )
-                .await?
-                .ok_or_else(|| {
-                    anyhow::anyhow!("Branch {} not found", request.resolution_context.branch_id)
-                })?;
-
-            if branch.current_commit_hash.is_empty() {
-                return Err(anyhow::anyhow!(
-                    "Branch {} has no current commit",
-                    request.resolution_context.branch_id
-                ));
-            }
-
-            self.store
-                .get_commit(&branch.current_commit_hash)
-                .await?
-                .ok_or_else(|| anyhow::anyhow!("Commit {} not found", branch.current_commit_hash))?
-        };
-
-        // Get commit data and create pipeline
-        let commit_data = commit
-            .get_data()
-            .map_err(|e| anyhow::anyhow!("Failed to read commit data: {}", e))?;
-        let pipeline = SolvePipeline::new(&commit_data);
-        pipeline.solve_instance_with_objectives(request, target_instance_id, objectives)
+        let result = pipeline.solve_instance_with_multiple_objectives_and_derived_properties(
+            request,
+            target_instance_id,
+            vec![("objective".into(), objective)],
+            None,
+        )?;
+        // Return the first (and only) artifact
+        result
+            .into_iter()
+            .next()
+            .map(|(_, artifact)| artifact)
+            .ok_or_else(|| anyhow::anyhow!("No artifact returned from solve"))
     }
 
     /// Execute the solve pipeline with multiple objective sets for efficient batch solving
@@ -881,6 +945,23 @@ impl<'a, S: crate::store::traits::Store + crate::store::traits::CommitStore>
         request: NewConfigurationArtifact,
         target_instance_id: Id,
         objective_sets: Vec<(String, HashMap<String, f64>)>,
+    ) -> Result<Vec<(String, ConfigurationArtifact)>> {
+        self.solve_instance_with_multiple_objectives_and_derived_properties(
+            request,
+            target_instance_id,
+            objective_sets,
+            None,
+        )
+        .await
+    }
+
+    /// Execute the solve pipeline with multiple objective sets and derived properties
+    pub async fn solve_instance_with_multiple_objectives_and_derived_properties(
+        &self,
+        request: NewConfigurationArtifact,
+        target_instance_id: Id,
+        objective_sets: Vec<(String, HashMap<String, f64>)>,
+        derived_properties: Option<Vec<String>>,
     ) -> Result<Vec<(String, ConfigurationArtifact)>> {
         // Fetch the commit based on resolution context
         let commit = if let Some(commit_hash) = &request.resolution_context.commit_hash {
@@ -920,10 +1001,11 @@ impl<'a, S: crate::store::traits::Store + crate::store::traits::CommitStore>
             .get_data()
             .map_err(|e| anyhow::anyhow!("Failed to read commit data: {}", e))?;
         let pipeline = SolvePipeline::new(&commit_data);
-        pipeline.solve_instance_with_multiple_objectives(
+        pipeline.solve_instance_with_multiple_objectives_and_derived_properties(
             request,
             target_instance_id,
             objective_sets,
+            derived_properties,
         )
     }
 }

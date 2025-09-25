@@ -8583,100 +8583,6 @@ pub use upsert_branch as upsert_version;
 // Instance Query API
 // =====================================
 
-/// Query/solve configuration for a specific instance on main branch
-pub async fn query_instance_configuration<S: Store>(
-    State(store): State<AppState<S>>,
-    Path((db_id, instance_id)): Path<(Id, Id)>,
-    RequestJson(request): RequestJson<InstanceQueryRequest>,
-) -> Result<Json<ConfigurationArtifact>, (StatusCode, Json<ErrorResponse>)> {
-    // Get main branch for this database
-    let main_branch_name = match get_main_branch_name(&*store, &db_id).await {
-        Ok(branch_id) => branch_id,
-        Err((status, error)) => return Err((status, error)),
-    };
-
-    query_instance_configuration_impl(&*store, db_id, main_branch_name, instance_id, request).await
-}
-
-/// Query/solve configuration for a specific instance on a specific branch
-pub async fn query_branch_instance_configuration<S: Store>(
-    State(store): State<AppState<S>>,
-    Path((db_id, branch_id, instance_id)): Path<(Id, Id, Id)>,
-    RequestJson(request): RequestJson<InstanceQueryRequest>,
-) -> Result<Json<ConfigurationArtifact>, (StatusCode, Json<ErrorResponse>)> {
-    let branch_name = match get_branch_name_from_legacy_id(&*store, &db_id, &branch_id).await {
-        Ok(name) => name,
-        Err(error_response) => return Err(error_response),
-    };
-
-    query_instance_configuration_impl(&*store, db_id, branch_name, instance_id, request).await
-}
-
-/// Implementation for instance-specific configuration queries
-async fn query_instance_configuration_impl<S: Store>(
-    store: &S,
-    database_id: Id,
-    branch_name: String,
-    instance_id: Id,
-    request: InstanceQueryRequest,
-) -> Result<Json<ConfigurationArtifact>, (StatusCode, Json<ErrorResponse>)> {
-    use crate::model::ResolutionContext;
-
-    // Verify instance exists and belongs to the branch
-    match store
-        .get_instance(&database_id, &branch_name, &instance_id)
-        .await
-    {
-        Ok(Some(_instance)) => {
-            // Instance exists in the branch
-        }
-        Ok(None) => {
-            return Err((
-                StatusCode::NOT_FOUND,
-                Json(ErrorResponse::new("Instance not found")),
-            ));
-        }
-        Err(e) => {
-            return Err((
-                StatusCode::INTERNAL_SERVER_ERROR,
-                Json(ErrorResponse::new(&e.to_string())),
-            ));
-        }
-    }
-
-    // Build ResolutionContext from path parameters and request
-    let resolution_context = ResolutionContext {
-        database_id,
-        branch_id: branch_name.clone(), // Temporarily use branch_name as branch_id
-        commit_hash: request.commit_hash,
-        policies: request.policies,
-        metadata: request.context_metadata,
-    };
-
-    // Create solve request
-    let solve_request = crate::model::NewConfigurationArtifact {
-        resolution_context,
-        user_metadata: request.user_metadata,
-    };
-
-    // Create solve pipeline and execute
-    use crate::logic::SolvePipelineWithStore;
-    let pipeline = SolvePipelineWithStore::new(&*store);
-
-    // Execute solve
-    let artifact = pipeline
-        .solve_instance(solve_request, instance_id)
-        .await
-        .map_err(|e| {
-            (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                Json(ErrorResponse::new(&format!("Solve failed: {}", e))),
-            )
-        })?;
-
-    Ok(Json(artifact))
-}
-
 // ========== Batch Query Endpoints ==========
 
 /// Batch query/solve configurations for a specific instance with multiple objectives on main branch
@@ -8775,7 +8681,12 @@ async fn batch_query_instance_configuration_impl<S: Store>(
     let pipeline = SolvePipelineWithStore::new(&*store);
 
     let batch_results = pipeline
-        .solve_instance_with_multiple_objectives(solve_request, instance_id.clone(), objective_sets)
+        .solve_instance_with_multiple_objectives_and_derived_properties(
+            solve_request,
+            instance_id.clone(),
+            objective_sets,
+            request.derived_properties.clone(),
+        )
         .await;
 
     // Process batch results
@@ -8938,7 +8849,12 @@ pub async fn batch_query_working_commit_instance_configuration<S: Store + Workin
     let pipeline = SolvePipelineWithStore::new(&*store);
 
     let batch_results = pipeline
-        .solve_instance_with_multiple_objectives(solve_request, instance_id.clone(), objective_sets)
+        .solve_instance_with_multiple_objectives_and_derived_properties(
+            solve_request,
+            instance_id.clone(),
+            objective_sets,
+            request.derived_properties.clone(),
+        )
         .await;
 
     // Process batch results
@@ -9086,7 +9002,12 @@ pub async fn batch_query_commit_instance_configuration<S: Store + CommitStore>(
     let pipeline = SolvePipelineWithStore::new(&*store);
 
     let batch_results = pipeline
-        .solve_instance_with_multiple_objectives(solve_request, instance_id.clone(), objective_sets)
+        .solve_instance_with_multiple_objectives_and_derived_properties(
+            solve_request,
+            instance_id.clone(),
+            objective_sets,
+            request.derived_properties.clone(),
+        )
         .await;
 
     // Process batch results
@@ -9143,195 +9064,6 @@ pub async fn batch_query_commit_instance_configuration<S: Store + CommitStore>(
     };
 
     Ok(Json(response))
-}
-
-// ========== GET Query Endpoints with URL Parameters ==========
-
-/// GET query endpoint for branch instances with URL parameters as solver objectives
-pub async fn get_branch_instance_query<S: Store + CommitStore>(
-    State(store): State<AppState<S>>,
-    Path((db_id, branch_name, instance_id)): Path<(Id, String, Id)>,
-    Query(params): Query<HashMap<String, String>>,
-) -> Result<Json<ConfigurationArtifact>, (StatusCode, Json<ErrorResponse>)> {
-    use crate::model::{ResolutionContext, ResolutionPolicies};
-
-    // Convert URL parameters to objectives map for derived properties
-    let mut objectives = HashMap::new();
-    for (key, value) in params {
-        if let Ok(weight) = value.parse::<f64>() {
-            objectives.insert(key, weight);
-        }
-    }
-
-    // Convert objectives to derived properties format (using objective keys as property names)
-    let _derived_properties = if objectives.is_empty() {
-        None
-    } else {
-        Some(objectives.keys().cloned().collect::<Vec<String>>())
-    };
-
-    // Build resolution context
-    let resolution_context = ResolutionContext {
-        database_id: db_id.clone(),
-        branch_id: branch_name.clone(),
-        commit_hash: None,
-        policies: ResolutionPolicies::default(),
-        metadata: None,
-    };
-
-    // Create solve request
-    let solve_request = crate::model::NewConfigurationArtifact {
-        resolution_context,
-        user_metadata: None,
-    };
-
-    // Create solve pipeline and execute
-    use crate::logic::SolvePipelineWithStore;
-    let pipeline = SolvePipelineWithStore::new(&*store);
-
-    // Execute solve with objectives if provided
-    let artifact = if objectives.is_empty() {
-        pipeline
-            .solve_instance(solve_request, instance_id)
-            .await
-            .map_err(|e| {
-                (
-                    StatusCode::INTERNAL_SERVER_ERROR,
-                    Json(ErrorResponse::new(&format!("Solve failed: {}", e))),
-                )
-            })?
-    } else {
-        pipeline
-            .solve_instance_with_objectives(solve_request, instance_id, objectives)
-            .await
-            .map_err(|e| {
-                (
-                    StatusCode::INTERNAL_SERVER_ERROR,
-                    Json(ErrorResponse::new(&format!("Solve failed: {}", e))),
-                )
-            })?
-    };
-
-    Ok(Json(artifact))
-}
-
-/// GET query endpoint for commit instances with URL parameters as solver objectives
-pub async fn get_commit_instance_query<S: Store + CommitStore>(
-    State(store): State<AppState<S>>,
-    Path((db_id, commit_hash, instance_id)): Path<(Id, String, Id)>,
-    Query(params): Query<HashMap<String, String>>,
-) -> Result<Json<ConfigurationArtifact>, (StatusCode, Json<ErrorResponse>)> {
-    use crate::model::{ResolutionContext, ResolutionPolicies};
-
-    // Convert URL parameters to objectives map
-    let mut objectives = HashMap::new();
-    for (key, value) in params {
-        if let Ok(weight) = value.parse::<f64>() {
-            objectives.insert(key, weight);
-        }
-    }
-
-    // Convert objectives to derived properties format (using objective keys as property names)
-    let _derived_properties = if objectives.is_empty() {
-        None
-    } else {
-        Some(objectives.keys().cloned().collect::<Vec<String>>())
-    };
-
-    // Verify commit exists and belongs to the database
-    let commit = match store.get_commit(&commit_hash).await {
-        Ok(Some(commit)) => {
-            if commit.database_id != db_id {
-                return Err((
-                    StatusCode::NOT_FOUND,
-                    Json(ErrorResponse::new("Commit not found in this database")),
-                ));
-            }
-            commit
-        }
-        Ok(None) => {
-            return Err((
-                StatusCode::NOT_FOUND,
-                Json(ErrorResponse::new("Commit not found")),
-            ));
-        }
-        Err(e) => {
-            return Err((
-                StatusCode::INTERNAL_SERVER_ERROR,
-                Json(ErrorResponse::new(&e.to_string())),
-            ));
-        }
-    };
-
-    // Get commit data and verify instance exists
-    let commit_data = match commit.get_data() {
-        Ok(data) => data,
-        Err(e) => {
-            return Err((
-                StatusCode::INTERNAL_SERVER_ERROR,
-                Json(ErrorResponse::new(&format!(
-                    "Failed to read commit data: {}",
-                    e
-                ))),
-            ));
-        }
-    };
-
-    let instance_exists = commit_data
-        .instances
-        .iter()
-        .any(|inst| inst.id == instance_id);
-
-    if !instance_exists {
-        return Err((
-            StatusCode::NOT_FOUND,
-            Json(ErrorResponse::new("Instance not found in commit")),
-        ));
-    }
-
-    // Build ResolutionContext for commit query (same approach as batch_query_commit_instance_configuration)
-    let resolution_context = ResolutionContext {
-        database_id: db_id.clone(),
-        branch_id: "commit".to_string(), // Use "commit" as branch_id for commit-specific queries
-        commit_hash: Some(commit_hash.clone()),
-        policies: ResolutionPolicies::default(),
-        metadata: None,
-    };
-
-    // Create solve request
-    let solve_request = crate::model::NewConfigurationArtifact {
-        resolution_context,
-        user_metadata: None,
-    };
-
-    // Create solve pipeline and execute
-    use crate::logic::SolvePipelineWithStore;
-    let pipeline = SolvePipelineWithStore::new(&*store);
-
-    // Execute solve with objectives if provided
-    let artifact = if objectives.is_empty() {
-        pipeline
-            .solve_instance(solve_request, instance_id)
-            .await
-            .map_err(|e| {
-                (
-                    StatusCode::INTERNAL_SERVER_ERROR,
-                    Json(ErrorResponse::new(&format!("Solve failed: {}", e))),
-                )
-            })?
-    } else {
-        pipeline
-            .solve_instance_with_objectives(solve_request, instance_id, objectives)
-            .await
-            .map_err(|e| {
-                (
-                    StatusCode::INTERNAL_SERVER_ERROR,
-                    Json(ErrorResponse::new(&format!("Solve failed: {}", e))),
-                )
-            })?
-    };
-
-    Ok(Json(artifact))
 }
 
 // ========== Working Commit Handlers ==========
@@ -11396,13 +11128,23 @@ pub async fn update_working_commit_instance<S: WorkingCommitStore + Store + Bran
         {
             // Apply updates - support partial updates
             if let Some(properties) = instance_update.get("properties") {
-                if let Ok(new_properties) = serde_json::from_value::<
-                    std::collections::HashMap<String, PropertyValue>,
-                >(properties.clone())
-                {
-                    // Merge properties (allowing partial updates)
-                    for (key, value) in new_properties {
-                        instance.properties.insert(key, value);
+                match serde_json::from_value::<std::collections::HashMap<String, PropertyValue>>(
+                    properties.clone(),
+                ) {
+                    Ok(new_properties) => {
+                        // Merge properties (allowing partial updates)
+                        for (key, value) in new_properties {
+                            instance.properties.insert(key, value);
+                        }
+                    }
+                    Err(e) => {
+                        return Err((
+                            StatusCode::BAD_REQUEST,
+                            Json(ErrorResponse::new(&format!(
+                                "Invalid property format: {}",
+                                e
+                            ))),
+                        ));
                     }
                 }
             }
@@ -11418,20 +11160,48 @@ pub async fn update_working_commit_instance<S: WorkingCommitStore + Store + Bran
                             instance.relationships.insert(key, value);
                         }
                     }
-                    Err(_e) => {
-                        // Failed to deserialize relationships
-                        // Continue processing other fields instead of failing the entire request
+                    Err(e) => {
+                        return Err((
+                            StatusCode::BAD_REQUEST,
+                            Json(ErrorResponse::new(&format!(
+                                "Invalid relationship format: {}. Expected format: {{\"pool\": {{\"type\": [...], \"where\": {{\"eq\": [\"$.properties.prop-id\", \"value\"]}}}}}}",
+                                e
+                            ))),
+                        ));
                     }
                 }
             }
 
             if let Some(domain) = instance_update.get("domain") {
-                instance.domain = serde_json::from_value(domain.clone()).ok();
+                match serde_json::from_value(domain.clone()) {
+                    Ok(new_domain) => instance.domain = new_domain,
+                    Err(e) => {
+                        return Err((
+                            StatusCode::BAD_REQUEST,
+                            Json(ErrorResponse::new(&format!("Invalid domain format: {}", e))),
+                        ));
+                    }
+                }
             }
 
             // Update timestamps
             instance.updated_at = chrono::Utc::now();
             instance.updated_by = "api-user".to_string(); // TODO: Get from auth context
+
+            // Validate the updated instance against the schema
+            if let Err(e) = SimpleValidator::validate_instance_basic(
+                &*store,
+                instance,
+                &working_commit.schema_data,
+            )
+            .await
+            {
+                return Err((
+                    StatusCode::BAD_REQUEST,
+                    Json(ErrorResponse::new(&e.to_string())),
+                ));
+            }
+
             Some(instance.clone())
         } else {
             None
@@ -12036,11 +11806,15 @@ pub async fn list_working_commit_instances<S: WorkingCommitStore + Store + Branc
         for instance in &instances {
             match Expander::expand_instance(instance, &instances, &schema).await {
                 Ok(expanded) => expanded_instances.push(expanded),
-                Err(e) => {
-                    return Err((
-                        StatusCode::INTERNAL_SERVER_ERROR,
-                        Json(ErrorResponse::new(&e.to_string())),
-                    ))
+                Err(_err) => {
+                    // We should raise an error if expansion fails
+                    // return Err((
+                    //     StatusCode::INTERNAL_SERVER_ERROR,
+                    //     Json(ErrorResponse::new(&format!(
+                    //         "Failed to expand instance '{}': {}",
+                    //         instance.id, err
+                    //     ))),
+                    // ));
                 }
             }
         }
@@ -12133,19 +11907,96 @@ pub async fn query_working_commit_instance_configuration<
 pub async fn get_working_commit_instance_query<S: WorkingCommitStore + Store + BranchStore>(
     State(store): State<AppState<S>>,
     Path((db_id, branch_name, instance_id)): Path<(Id, String, Id)>,
-    Query(_params): Query<std::collections::HashMap<String, String>>,
-) -> Result<Json<serde_json::Value>, (StatusCode, Json<ErrorResponse>)> {
-    // For GET requests, we'll return basic instance data instead of complex query results
-    // No expansion for this endpoint
-    get_working_commit_instance(
-        State(store),
-        Path((db_id, branch_name, instance_id)),
-        Query(ExpandQuery {
-            expand: None,
-            depth: None,
-        }),
-    )
-    .await
+    Query(params): Query<std::collections::HashMap<String, String>>,
+) -> Result<Json<ConfigurationArtifact>, (StatusCode, Json<ErrorResponse>)> {
+    use crate::logic::SolvePipeline;
+    use crate::model::{CommitData, ResolutionContext, ResolutionPolicies};
+
+    // Verify branch exists
+    verify_branch_exists(&*store, &db_id, &branch_name).await?;
+
+    // Get the working commit
+    let working_commit = match store
+        .get_active_working_commit_for_branch(&db_id, &branch_name)
+        .await
+    {
+        Ok(Some(commit)) => commit,
+        Ok(None) => {
+            return Err((
+                StatusCode::NOT_FOUND,
+                Json(ErrorResponse::new("No active working commit found")),
+            ))
+        }
+        Err(e) => {
+            return Err((
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(ErrorResponse::new(&e.to_string())),
+            ))
+        }
+    };
+
+    // Convert URL parameters to objectives map and extract derived properties
+    let mut objective = HashMap::new();
+    let mut derived_properties: Option<Vec<String>> = None;
+
+    for (key, value) in params {
+        if key == "derived_properties" {
+            // Handle comma-separated list of derived properties
+            derived_properties = Some(value.split(',').map(|s| s.trim().to_string()).collect());
+        } else if let Ok(weight) = value.parse::<f64>() {
+            objective.insert(key, weight);
+        }
+    }
+
+    // Create commit data from working commit
+    let commit_data = CommitData {
+        schema: working_commit.schema_data.clone(),
+        instances: working_commit.instances_data.clone(),
+    };
+
+    // Build resolution context
+    let resolution_context = ResolutionContext {
+        database_id: db_id.clone(),
+        branch_id: branch_name.clone(),
+        commit_hash: None,
+        policies: ResolutionPolicies::default(),
+        metadata: None,
+    };
+
+    // Create solve request
+    let solve_request = crate::model::NewConfigurationArtifact {
+        resolution_context,
+        user_metadata: None,
+    };
+
+    // Create solve pipeline and execute with working commit data
+    let pipeline = SolvePipeline::new(&commit_data);
+
+    // Execute solve with objectives and/or derived properties if provided
+    let artifact = pipeline
+        .solve_instance_with_multiple_objectives_and_derived_properties(
+            solve_request,
+            instance_id,
+            vec![("default".to_string(), objective)],
+            derived_properties,
+        )
+        .map_err(|e| {
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(ErrorResponse::new(&format!("Solve failed: {}", e))),
+            )
+        })?
+        .into_iter()
+        .next()
+        .map(|(_, artifact)| artifact)
+        .ok_or_else(|| {
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(ErrorResponse::new("No solution returned")),
+            )
+        })?;
+
+    Ok(Json(artifact))
 }
 
 // ============================================================================
@@ -12245,7 +12096,7 @@ pub async fn get_default_branch_working_commit_instance_query<
     State(store): State<AppState<S>>,
     Path((db_id, instance_id)): Path<(Id, Id)>,
     Query(params): Query<std::collections::HashMap<String, String>>,
-) -> Result<Json<serde_json::Value>, (StatusCode, Json<ErrorResponse>)> {
+) -> Result<Json<ConfigurationArtifact>, (StatusCode, Json<ErrorResponse>)> {
     let main_branch_name = get_main_branch_name(&*store, &db_id).await?;
     get_working_commit_instance_query(
         State(store),

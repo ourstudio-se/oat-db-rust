@@ -104,6 +104,13 @@ impl Validator {
         let count = target_ids.len();
 
         match &rel_def.quantifier {
+            Quantifier::One => {
+                if count != 1 {
+                    return Err(anyhow!(
+                        "Relationship requires exactly one target, found {}", count
+                    ));
+                }
+            }
             Quantifier::Exactly(n) => {
                 if count != *n {
                     return Err(anyhow!(

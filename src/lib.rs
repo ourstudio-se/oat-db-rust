@@ -510,6 +510,223 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn test_relationship_poolbased_serialization() {
+        // This test verifies the serialization behavior of PoolBased relationships
+        use crate::model::{Instance, RelationshipSelection};
+        use std::collections::HashMap;
+        use serde_json;
+        
+        // Test 1: PoolBased with null pool and selection
+        let pool_based = RelationshipSelection::PoolBased {
+            pool: None,
+            selection: None,
+        };
+        
+        let json = serde_json::to_string(&pool_based).unwrap();
+        println!("PoolBased with null pool and selection serializes to: {}", json);
+        
+        // Due to skip_serializing_if, selection field won't be included when None
+        assert_eq!(json, r#"{"pool":null}"#, "Only pool field should be serialized");
+        
+        // Test 2: Create an instance with this relationship
+        let mut relationships = HashMap::new();
+        relationships.insert("wheels".to_string(), pool_based);
+        
+        let instance = Instance {
+            id: "bike-001".to_string(),
+            class_id: "Bicycle".to_string(),
+            domain: None,
+            properties: HashMap::new(),
+            relationships: relationships.clone(),
+            created_by: "test".to_string(),
+            created_at: chrono::Utc::now(),
+            updated_by: "test".to_string(), 
+            updated_at: chrono::Utc::now(),
+        };
+        
+        // Serialize the instance
+        let instance_json = serde_json::to_value(&instance).unwrap();
+        let relationships_json = instance_json.get("relationships").unwrap();
+        let wheels_json = relationships_json.get("wheels").unwrap();
+        
+        println!("Instance relationships field contains: {}", serde_json::to_string_pretty(relationships_json).unwrap());
+        
+        // Verify the relationship is preserved
+        assert!(wheels_json.is_object(), "Relationship should be an object");
+        assert!(wheels_json.get("pool").is_some(), "Pool field should be present");
+        
+        // Test 3: Deserialize back and verify
+        let deserialized: Instance = serde_json::from_value(instance_json).unwrap();
+        assert_eq!(deserialized.relationships.len(), 1, "Should have one relationship");
+        assert!(deserialized.relationships.contains_key("wheels"), "Should have wheels relationship");
+        
+        match &deserialized.relationships["wheels"] {
+            RelationshipSelection::PoolBased { pool, selection } => {
+                assert_eq!(pool, &None, "Pool should be None");
+                assert_eq!(selection, &None, "Selection should be None");
+                println!("✓ PoolBased relationship correctly deserializes back");
+            }
+            _ => panic!("Expected PoolBased variant"),
+        }
+        
+        println!("✅ PoolBased relationships are preserved through serialization");
+    }
+    
+    #[tokio::test]
+    async fn test_relationship_api_deserialization() {
+        // This test simulates what happens when the API receives the user's JSON
+        use crate::model::{Instance, RelationshipSelection};
+        use serde_json;
+        
+        // Test the exact JSON the user is sending
+        let user_json = r#"{
+            "id": "bike-001",
+            "class": "Bicycle",
+            "properties": {
+                "name": {"value": "Mountain Explorer", "type": "string"},
+                "gear_count": {"value": 21, "type": "number"}
+            },
+            "relationships": {
+                "wheels": {
+                    "pool": null,
+                    "selection": null
+                }
+            }
+        }"#;
+        
+        // Try to deserialize as Instance
+        let instance_result = serde_json::from_str::<Instance>(user_json);
+        
+        match instance_result {
+            Ok(instance) => {
+                println!("✓ User JSON deserializes successfully");
+                assert_eq!(instance.id, "bike-001");
+                assert_eq!(instance.class_id, "Bicycle");
+                assert_eq!(instance.relationships.len(), 1, "Should have one relationship");
+                
+                // Check the wheels relationship
+                match instance.relationships.get("wheels") {
+                    Some(RelationshipSelection::PoolBased { pool, selection }) => {
+                        assert_eq!(pool, &None);
+                        assert_eq!(selection, &None);
+                        println!("✓ Wheels relationship is PoolBased with null pool and selection");
+                    }
+                    Some(other) => panic!("Unexpected relationship variant: {:?}", other),
+                    None => panic!("Wheels relationship is missing!"),
+                }
+            }
+            Err(e) => panic!("Failed to deserialize user JSON: {}", e),
+        }
+        
+        // Test another variant - the Filter format the user mentioned
+        let filter_json = r#"{
+            "id": "car-001",
+            "class": "Car", 
+            "properties": {},
+            "relationships": {
+                "color": {
+                    "filter": {
+                        "type": ["Color"],
+                        "where": {
+                            "lt": ["$.price", "50"]
+                        }
+                    }
+                }
+            }
+        }"#;
+        
+        let filter_result = serde_json::from_str::<Instance>(filter_json);
+        match filter_result {
+            Ok(instance) => {
+                match instance.relationships.get("color") {
+                    Some(RelationshipSelection::Filter { filter }) => {
+                        assert_eq!(filter.types, Some(vec!["Color".to_string()]));
+                        println!("✓ Filter relationship variant works correctly");
+                    }
+                    Some(other) => panic!("Expected Filter variant, got: {:?}", other),
+                    None => panic!("Color relationship is missing!"),
+                }
+            }
+            Err(e) => panic!("Failed to deserialize filter JSON: {}", e),
+        }
+    }
+
+    #[tokio::test]
+    async fn test_working_commit_instance_persistence() {
+        // This test simulates the exact flow of creating an instance in working commit
+        use crate::model::{Instance, RelationshipSelection, WorkingCommit, Schema, WorkingCommitStatus};
+        use std::collections::HashMap;
+        use serde_json;
+        
+        // Create a working commit
+        let mut working_commit = WorkingCommit {
+            id: "wc-001".to_string(),
+            database_id: "db-001".to_string(),
+            branch_name: Some("main".to_string()),
+            based_on_hash: "hash-001".to_string(),
+            author: Some("test".to_string()),
+            created_at: chrono::Utc::now().to_rfc3339(),
+            updated_at: chrono::Utc::now().to_rfc3339(),
+            schema_data: Schema {
+                id: "schema-001".to_string(),
+                description: Some("Test schema".to_string()),
+                classes: vec![],
+            },
+            instances_data: vec![],
+            status: WorkingCommitStatus::Active,
+            merge_state: None,
+        };
+        
+        // Create an instance with PoolBased relationship
+        let mut relationships = HashMap::new();
+        relationships.insert("wheels".to_string(), RelationshipSelection::PoolBased {
+            pool: None,
+            selection: None,
+        });
+        
+        let instance = Instance {
+            id: "bike-001".to_string(),
+            class_id: "Bicycle".to_string(),
+            domain: None,
+            properties: HashMap::new(),
+            relationships,
+            created_by: "test".to_string(),
+            created_at: chrono::Utc::now(),
+            updated_by: "test".to_string(),
+            updated_at: chrono::Utc::now(),
+        };
+        
+        // Add instance to working commit (simulating the handler)
+        working_commit.instances_data.push(instance.clone());
+        
+        // Serialize the working commit (simulating what PostgresStore does)
+        let instances_json = serde_json::to_value(&working_commit.instances_data).unwrap();
+        println!("Serialized instances: {}", serde_json::to_string_pretty(&instances_json).unwrap());
+        
+        // Check that the relationship is preserved in JSON
+        let first_instance = instances_json.get(0).unwrap();
+        let relationships = first_instance.get("relationships").unwrap();
+        assert!(relationships.get("wheels").is_some(), "Wheels relationship should exist in JSON");
+        
+        // Deserialize back (simulating reading from DB)
+        let deserialized_instances: Vec<Instance> = serde_json::from_value(instances_json).unwrap();
+        assert_eq!(deserialized_instances.len(), 1);
+        
+        let deserialized_instance = &deserialized_instances[0];
+        assert_eq!(deserialized_instance.relationships.len(), 1, "Should have one relationship after deserialization");
+        
+        match deserialized_instance.relationships.get("wheels") {
+            Some(RelationshipSelection::PoolBased { pool, selection }) => {
+                assert_eq!(pool, &None);
+                assert_eq!(selection, &None);
+                println!("✓ PoolBased relationship survives working commit serialization");
+            }
+            Some(other) => panic!("Unexpected relationship variant after deserialization: {:?}", other),
+            None => panic!("Wheels relationship lost during serialization!"),
+        }
+    }
+
+    #[tokio::test]
     async fn test_classdef_base_backward_compatibility() {
         // This test verifies that ClassDef can deserialize old data without the base field
         use crate::model::{Base, BaseOp, ClassDef};
@@ -589,4 +806,5 @@ mod tests {
         assert!(!json.contains("\"val\""));
         println!("✓ Base serialization omits val when None");
     }
+
 }
