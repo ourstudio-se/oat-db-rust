@@ -651,6 +651,62 @@ mod tests {
         }
     }
 
+    #[test]
+    fn test_property_value_json_format() {
+        use crate::model::{PropertyValue, TypedValue, DataType};
+        use std::collections::HashMap;
+        use serde_json;
+        
+        // Test exactly what the API is doing
+        let full_request = r#"{
+            "id": "c1",
+            "class": "class-color",
+            "properties": {
+                "name": {
+                    "value": "Red",
+                    "type": "string"
+                },
+                "image": {
+                    "value": "red.png",
+                    "type": "string"
+                },
+                "price": {
+                    "value": 100,
+                    "type": "number"
+                }
+            },
+            "relationships": {}
+        }"#;
+        
+        // Parse as serde_json::Value first (like the API does)
+        let instance_update: serde_json::Value = serde_json::from_str(full_request).unwrap();
+        
+        // Extract properties field
+        if let Some(properties) = instance_update.get("properties") {
+            println!("Properties JSON: {}", serde_json::to_string_pretty(properties).unwrap());
+            
+            // Try to deserialize exactly like the API
+            let result = serde_json::from_value::<std::collections::HashMap<String, PropertyValue>>(
+                properties.clone()
+            );
+            
+            match &result {
+                Ok(map) => {
+                    println!("Successfully deserialized {} properties!", map.len());
+                    for (k, v) in map {
+                        println!("  Key: {}, Value: {:?}", k, v);
+                    }
+                }
+                Err(e) => {
+                    println!("Deserialization error: {}", e);
+                    println!("Error details: {:?}", e);
+                }
+            }
+            
+            assert!(result.is_ok(), "Properties should deserialize successfully");
+        }
+    }
+
     #[tokio::test]
     async fn test_working_commit_instance_persistence() {
         // This test simulates the exact flow of creating an instance in working commit

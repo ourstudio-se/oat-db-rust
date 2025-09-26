@@ -79,7 +79,6 @@ impl<'a> SolvePipeline<'a> {
         phase_timings.push(("solve", phase_start.elapsed()));
 
         // Step 5.5: Evaluate derived properties for all instances
-        let phase_start = Instant::now();
         let instance_class = schema
             .classes
             .iter()
@@ -116,8 +115,7 @@ impl<'a> SolvePipeline<'a> {
                                         &_target_instance,
                                         &resolved_instances,
                                         solution,
-                                        short.method.as_str(),
-                                        &short.property,
+                                        &short,
                                     );
                                     if let Some(value) = derived_value {
                                         let mut property_map = HashMap::new();
@@ -385,48 +383,62 @@ impl<'a> SolvePipeline<'a> {
         instance: &Instance,
         other_instances: &[Instance],
         solution: &HashMap<String, i64>,
-        derivation_type: &str,
-        property_name: &str,
+        fn_short: &crate::model::FnShort,
     ) -> Option<serde_json::Value> {
         // Placeholder for future implementation
-        if derivation_type == "sum" {
-            let dependencies = self
-                .get_instance_dependencies(&instance.id, other_instances)
-                .ok()?;
+        let dependencies = self
+            .get_instance_dependencies(&instance.id, other_instances)
+            .ok()?;
 
-            // Collect all property values to determine the type
-            let mut values = Vec::new();
+        // Collect all property values to determine the type
+        let mut values = Vec::new();
 
-            for id in dependencies.iter() {
-                if let Some(inst) = other_instances.iter().find(|inst| &inst.id == id) {
-                    if let Some(prop_value) = inst.properties.get(property_name) {
-                        let value = match prop_value {
-                            crate::model::PropertyValue::Literal(typed_val) => {
-                                typed_val.value.clone()
-                            }
-                            crate::model::PropertyValue::Conditional(rule_set) => {
-                                // For conditional properties, evaluate the rule
-                                use crate::logic::evaluate_simple::SimpleEvaluator;
-                                SimpleEvaluator::evaluate_rule_set(rule_set, inst)
-                            }
-                        };
-                        if solution.get(&id.to_string()) >= Some(&1) {
-                            values.push(value.clone());
-                            println!("Included value from instance {}: {:?}", id, value);
+        for id in dependencies.iter() {
+            if let Some(inst) = other_instances.iter().find(|inst| &inst.id == id) {
+                if let Some(prop_value) = inst.properties.get(fn_short.property.as_str()) {
+                    let value = match prop_value {
+                        crate::model::PropertyValue::Literal(typed_val) => typed_val.value.clone(),
+                        crate::model::PropertyValue::Conditional(rule_set) => {
+                            // For conditional properties, evaluate the rule
+                            use crate::logic::evaluate_simple::SimpleEvaluator;
+                            SimpleEvaluator::evaluate_rule_set(rule_set, inst)
                         }
+                    };
+                    if solution.get(&id.to_string()) >= Some(&1) {
+                        values.push(value.clone());
                     }
                 }
             }
+        }
 
-            if values.is_empty() {
-                return Some(serde_json::Value::Null);
-            }
+        if values.is_empty() {
+            return Some(serde_json::Value::Null);
+        }
 
-            // Determine the predominant type and perform appropriate operation
-            let has_string = values.iter().any(|v| v.is_string());
+        // Determine the predominant type and perform appropriate operation
+        let has_string = values.iter().any(|v| v.is_string());
 
-            if has_string {
-                // String concatenation mode
+        if has_string {
+            // String concatenation mode
+            if fn_short.method == "sum" || fn_short.method == "concat" {
+                // Check that if there are derivation_arguments, that it contains a separator
+                // If not then we use a comma as default
+                let separator = fn_short
+                    .args
+                    .as_ref()
+                    .and_then(|args| {
+                        args.iter().find_map(|arg| match arg {
+                            crate::model::FnArg::Named { key, value } if key == "separator" => {
+                                match value {
+                                    crate::model::FnArgValue::String(s) => Some(s.as_str()),
+                                    _ => Some(","),
+                                }
+                            }
+                            _ => None,
+                        })
+                    })
+                    .unwrap_or(",");
+
                 let concatenated = values
                     .into_iter()
                     .filter_map(|v| match v {
@@ -437,11 +449,16 @@ impl<'a> SolvePipeline<'a> {
                         _ => Some(serde_json::to_string(&v).unwrap_or_default()),
                     })
                     .collect::<Vec<String>>()
-                    .join(",");
+                    .join(separator);
 
                 return Some(serde_json::Value::String(concatenated));
-            } else {
-                // Numeric addition mode
+            } else if fn_short.method == "mean" {
+                // Mean is not defined for strings
+                return None;
+            }
+        } else {
+            // Numeric addition mode
+            if fn_short.method == "sum" {
                 let sum = values
                     .into_iter()
                     .map(|v| match v {
@@ -453,6 +470,22 @@ impl<'a> SolvePipeline<'a> {
                     .sum::<f64>();
 
                 return Some(serde_json::json!(sum));
+            } else if fn_short.method == "mean" {
+                let sum: f64 = values
+                    .iter()
+                    .map(|v| match v {
+                        serde_json::Value::Number(n) => n.as_f64().unwrap_or(0.0),
+                        serde_json::Value::Bool(true) => 1.0,
+                        serde_json::Value::Bool(false) => 0.0,
+                        _ => 0.0,
+                    })
+                    .sum();
+                let count = values.len() as f64;
+                if count > 0.0 {
+                    return Some(serde_json::json!(sum / count));
+                } else {
+                    return Some(serde_json::json!(0));
+                }
             }
         }
         None

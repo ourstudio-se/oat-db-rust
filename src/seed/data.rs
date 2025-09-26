@@ -1,5 +1,5 @@
 use crate::model::{
-    Base, Branch, ClassDef, DataType, Database, DefaultPool, DerivedDef, Domain, Expr, Id, Instance,
+    Base, Branch, ClassDef, DataType, Database, DefaultPool, DerivedDef, Domain, Expr, FnShort, Id, Instance,
     PropertyDef, PropertyValue, Quantifier, RelationshipDef, RelationshipSelection, Schema,
     SelectionType,
 };
@@ -467,6 +467,7 @@ async fn load_schema<S: Store>(_store: &S, _branch_id: &Id) -> Result<()> {
                 fn_short: Some(FnShort {
                     method: "sum".to_string(),
                     property: "price".to_string(),
+                    args: None,
                 }),
             }
         ],

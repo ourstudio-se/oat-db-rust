@@ -122,6 +122,48 @@ pub struct ExpandedInstance {
     pub updated_at: DateTime<Utc>,
 }
 
+impl ExpandedInstance {
+    pub fn to_instance(&self) -> Instance {
+        Instance {
+            id: self.id.clone(),
+            class_id: self.class_id.clone(),
+            domain: self.domain.clone(),
+            properties: self
+                .properties
+                .iter()
+                .map(|(k, v)| {
+                    (
+                        k.clone(),
+                        PropertyValue::Literal(TypedValue {
+                            value: v.clone(),
+                            data_type: match v {
+                                serde_json::Value::String(_) => DataType::String,
+                                serde_json::Value::Number(_) => DataType::Number,
+                                serde_json::Value::Bool(_) => DataType::Boolean,
+                                _ => DataType::String, // Default/fallback type
+                            },
+                        }),
+                    )
+                })
+                .collect(),
+            relationships: self
+                .relationships
+                .iter()
+                .map(|(k, v)| {
+                    (
+                        k.clone(),
+                        RelationshipSelection::SimpleIds(v.materialized_ids.clone()),
+                    )
+                })
+                .collect(),
+            created_by: self.created_by.clone(),
+            created_at: self.created_at,
+            updated_by: self.updated_by.clone(),
+            updated_at: self.updated_at,
+        }
+    }
+}
+
 /// Enhanced relationship resolution with transparency about how IDs were resolved
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct ResolvedRelationship {

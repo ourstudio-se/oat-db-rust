@@ -117,6 +117,22 @@ pub enum DefaultPool {
 pub struct FnShort {
     pub method: String,  // e.g., "sum"
     pub property: String, // e.g., "price"
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub args: Option<Vec<FnArg>>, // Optional arguments for the method
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(untagged)]
+pub enum FnArg {
+    Named { key: String, value: FnArgValue },
+    Positional(FnArgValue),
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(untagged)]
+pub enum FnArgValue {
+    String(String),
+    Number(f64),
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]

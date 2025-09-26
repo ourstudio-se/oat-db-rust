@@ -16,10 +16,9 @@ use crate::logic::{Expander, SimpleValidator};
 use crate::model::{
     generate_id, BatchInstanceQueryRequest, BatchQueryMetadata, BatchQueryResponse, Branch,
     ClassDef, ClassDefUpdate, Commit, CommitTag, ConfigurationArtifact, ConfigurationResult,
-    Database, Domain, ExpandedInstance, Id, Instance, InstanceFilter, InstanceQueryRequest,
-    NewClassDef, NewCommit, NewCommitTag, NewDatabase, NewWorkingCommit, PropertyValue,
-    RelationshipSelection, Schema, TagQuery, TagType, TaggedCommit, UserContext, WorkingCommit,
-    WorkingCommitStatus,
+    Database, Domain, ExpandedInstance, Id, Instance, InstanceFilter, NewClassDef, NewCommit,
+    NewCommitTag, NewDatabase, NewWorkingCommit, PropertyValue, RelationshipSelection, Schema,
+    TagQuery, TagType, TaggedCommit, UserContext, WorkingCommit, WorkingCommitStatus,
 };
 use crate::store::traits::{
     BranchStore, CommitStore, DatabaseStore, Store, TagStore, VersionCompat, WorkingCommitStore,
@@ -3505,8 +3504,8 @@ pub async fn get_openapi_spec<S: Store>(_state: State<AppState<S>>) -> Json<serd
             "/databases/{db_id}/branches/{branch_id}/working-commit/instances/{instance_id}": {
                 "patch": {
                     "tags": ["Working Commits"],
-                    "summary": "Stage instance property update",
-                    "description": "Updates instance properties in the working commit. If no working commit exists, one is automatically created.",
+                    "summary": "Stage instance property update or create instance",
+                    "description": "Updates instance properties in the working commit. If the instance doesn't exist, it will be created with the provided data. If no working commit exists, one is automatically created. When creating a new instance, the 'class' or 'class_id' field must be provided in the request body.",
                     "parameters": [
                         {
                             "name": "db_id",
@@ -3548,10 +3547,13 @@ pub async fn get_openapi_spec<S: Store>(_state: State<AppState<S>>) -> Json<serd
                     },
                     "responses": {
                         "200": {
-                            "description": "Instance properties staged successfully"
+                            "description": "Instance properties staged successfully (updated existing instance or created new)"
+                        },
+                        "400": {
+                            "description": "Invalid request format or missing class_id for new instance"
                         },
                         "404": {
-                            "description": "Instance or branch not found"
+                            "description": "Branch not found"
                         }
                     }
                 }
@@ -11188,19 +11190,8 @@ pub async fn update_working_commit_instance<S: WorkingCommitStore + Store + Bran
             instance.updated_at = chrono::Utc::now();
             instance.updated_by = "api-user".to_string(); // TODO: Get from auth context
 
-            // Validate the updated instance against the schema
-            if let Err(e) = SimpleValidator::validate_instance_basic(
-                &*store,
-                instance,
-                &working_commit.schema_data,
-            )
-            .await
-            {
-                return Err((
-                    StatusCode::BAD_REQUEST,
-                    Json(ErrorResponse::new(&e.to_string())),
-                ));
-            }
+            // NOTE: No validation here - following the validation philosophy that PATCH operations
+            // should never be blocked by validation. Users can validate when ready using dedicated endpoints.
 
             Some(instance.clone())
         } else {
@@ -11225,10 +11216,101 @@ pub async fn update_working_commit_instance<S: WorkingCommitStore + Store + Bran
 
         Ok(Json(updated_instance))
     } else {
-        Err((
-            StatusCode::NOT_FOUND,
-            Json(ErrorResponse::new("Instance not found")),
-        ))
+        // Instance not found - create a new one if class_id is provided
+        let class_id = match instance_update.get("class").or(instance_update.get("class_id")) {
+            Some(serde_json::Value::String(id)) => id.clone(),
+            _ => {
+                return Err((
+                    StatusCode::BAD_REQUEST,
+                    Json(ErrorResponse::new(
+                        "class or class_id field is required when creating a new instance",
+                    )),
+                ));
+            }
+        };
+
+        // Create new instance
+        let now = chrono::Utc::now();
+        let mut new_instance = Instance {
+            id: instance_id,
+            class_id,
+            domain: None,
+            properties: HashMap::new(),
+            relationships: HashMap::new(),
+            created_by: "api-user".to_string(), // TODO: Get from auth context
+            created_at: now,
+            updated_by: "api-user".to_string(), // TODO: Get from auth context
+            updated_at: now,
+        };
+
+        // Apply the updates to the new instance
+        if let Some(properties) = instance_update.get("properties") {
+            match serde_json::from_value::<std::collections::HashMap<String, PropertyValue>>(
+                properties.clone(),
+            ) {
+                Ok(new_properties) => {
+                    new_instance.properties = new_properties;
+                }
+                Err(e) => {
+                    return Err((
+                        StatusCode::BAD_REQUEST,
+                        Json(ErrorResponse::new(&format!(
+                            "Invalid property format: {}",
+                            e
+                        ))),
+                    ));
+                }
+            }
+        }
+
+        if let Some(relationships) = instance_update.get("relationships") {
+            match serde_json::from_value::<
+                std::collections::HashMap<String, RelationshipSelection>,
+            >(relationships.clone())
+            {
+                Ok(new_relationships) => {
+                    new_instance.relationships = new_relationships;
+                }
+                Err(e) => {
+                    return Err((
+                        StatusCode::BAD_REQUEST,
+                        Json(ErrorResponse::new(&format!(
+                            "Invalid relationship format: {}. Expected format: {{\"pool\": {{\"type\": [...], \"where\": {{\"eq\": [\"$.properties.prop-id\", \"value\"]}}}}}}",
+                            e
+                        ))),
+                    ));
+                }
+            }
+        }
+
+        if let Some(domain) = instance_update.get("domain") {
+            match serde_json::from_value(domain.clone()) {
+                Ok(new_domain) => new_instance.domain = new_domain,
+                Err(e) => {
+                    return Err((
+                        StatusCode::BAD_REQUEST,
+                        Json(ErrorResponse::new(&format!("Invalid domain format: {}", e))),
+                    ));
+                }
+            }
+        }
+
+        // Add the new instance to the working commit
+        working_commit.instances_data.push(new_instance.clone());
+        working_commit.touch();
+
+        // Save the working commit
+        if let Err(e) = store.update_working_commit(working_commit).await {
+            return Err((
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(ErrorResponse::new(&format!(
+                    "Failed to update working commit: {}",
+                    e
+                ))),
+            ));
+        }
+
+        Ok(Json(new_instance))
     }
 }
 
@@ -11460,16 +11542,8 @@ pub async fn create_working_commit_instance<S: WorkingCommitStore + Store + Bran
         ));
     }
 
-    // Validate the instance against the working commit's schema
-    if let Err(e) =
-        SimpleValidator::validate_instance_basic(&*store, &instance, &working_commit.schema_data)
-            .await
-    {
-        return Err((
-            StatusCode::BAD_REQUEST,
-            Json(ErrorResponse::new(&e.to_string())),
-        ));
-    }
+    // NOTE: No validation here - following the validation philosophy that create/update operations
+    // should never be blocked by validation. Users can validate when ready using dedicated endpoints.
 
     // Set audit trail for new instance
     instance.created_by = user_context.user_id.clone();
@@ -11806,16 +11880,7 @@ pub async fn list_working_commit_instances<S: WorkingCommitStore + Store + Branc
         for instance in &instances {
             match Expander::expand_instance(instance, &instances, &schema).await {
                 Ok(expanded) => expanded_instances.push(expanded),
-                Err(_err) => {
-                    // We should raise an error if expansion fails
-                    // return Err((
-                    //     StatusCode::INTERNAL_SERVER_ERROR,
-                    //     Json(ErrorResponse::new(&format!(
-                    //         "Failed to expand instance '{}': {}",
-                    //         instance.id, err
-                    //     ))),
-                    // ));
-                }
+                Err(_err) => {}
             }
         }
 
@@ -11948,10 +12013,20 @@ pub async fn get_working_commit_instance_query<S: WorkingCommitStore + Store + B
         }
     }
 
+    let schema = working_commit.schema_data.clone();
+    let instances = working_commit.instances_data.clone();
+    let mut expanded_instances: Vec<Instance> = Vec::new();
+    for instance in &instances {
+        match Expander::expand_instance(instance, &instances, &schema).await {
+            Ok(expanded) => expanded_instances.push(expanded.to_instance()),
+            Err(_err) => {}
+        }
+    }
+
     // Create commit data from working commit
     let commit_data = CommitData {
-        schema: working_commit.schema_data.clone(),
-        instances: working_commit.instances_data.clone(),
+        schema: schema.clone(),
+        instances: expanded_instances,
     };
 
     // Build resolution context

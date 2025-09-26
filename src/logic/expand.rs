@@ -70,15 +70,6 @@ impl Expander {
                 let resolved_relationship =
                     Self::resolve_relationship_from_schema(other_instances, rel_def).await?;
 
-                if resolved_relationship.materialized_ids.is_empty() {
-                    // Raise an error if no instances were resolved
-                    return Err(anyhow::anyhow!(
-                        "No instances resolved for relationship '{}' of instance '{}'. This may indicate a misconfiguration in the schema or that no instances exist in the target class.",
-                        relationship_name,
-                        instance.id
-                    ));
-                }
-
                 resolved_relationship
             };
 
