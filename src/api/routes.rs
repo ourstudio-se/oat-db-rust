@@ -69,35 +69,6 @@ pub fn create_router<S: Store + 'static>() -> Router<Arc<S>> {
         .route("/databases/:db_id/commits/:commit_hash/instances", get(handlers::get_commit_instances::<S>))
         .route("/databases/:db_id/commits/:commit_hash/schema/classes/:class_id", get(handlers::get_commit_class::<S>))
         .route("/databases/:db_id/commits/:commit_hash/instances/:instance_id", get(handlers::get_commit_instance::<S>))
-        // NEW: Commit-based working-commit endpoints
-        .route(
-            "/databases/:db_id/commits/:commit_hash/working-commit",
-            get(handlers::get_commit_working_commit::<S>),
-        )
-        .route(
-            "/databases/:db_id/commits/:commit_hash/working-commit/schema",
-            get(handlers::get_commit_working_commit_schema::<S>),
-        )
-        .route(
-            "/databases/:db_id/commits/:commit_hash/working-commit/schema/classes/:class_id",
-            get(handlers::get_commit_working_commit_class::<S>),
-        )
-        .route(
-            "/databases/:db_id/commits/:commit_hash/working-commit/instances",
-            get(handlers::list_commit_working_commit_instances::<S>),
-        )
-        .route(
-            "/databases/:db_id/commits/:commit_hash/working-commit/instances/:instance_id",
-            get(handlers::get_commit_working_commit_instance::<S>),
-        )
-        .route(
-            "/databases/:db_id/commits/:commit_hash/working-commit/instances/:instance_id/query",
-            post(handlers::query_commit_working_commit_instance::<S>),
-        )
-        .route(
-            "/databases/:db_id/commits/:commit_hash/working-commit/instances/:instance_id/query",
-            get(handlers::get_commit_working_commit_instance_query::<S>),
-        )
         // DEFAULT BRANCH working-commit endpoints (assumes main branch)
         .route(
             "/databases/:db_id/working-commit",
@@ -127,54 +98,25 @@ pub fn create_router<S: Store + 'static>() -> Router<Arc<S>> {
             "/databases/:db_id/working-commit/instances/:instance_id/query",
             get(handlers::get_default_branch_working_commit_instance_query::<S>),
         )
-        // Database-level queries (automatically use main branch) - DEPRECATED
-        // These endpoints are DEPRECATED and will be removed in future versions.
-        // Use commit-specific endpoints instead: /databases/{db}/commits/{commit}/...
+        // Database-level READ-ONLY queries (automatically use main branch)
+        // For modifications, use working-commit endpoints
         .route(
             "/databases/:db_id/schema",
             get(handlers::get_database_schema::<S>),
-        )
-        .route(
-            "/databases/:db_id/schema",
-            post(handlers::upsert_database_schema::<S>),
-        )
-        .route(
-            "/databases/:db_id/schema/classes",
-            post(handlers::add_database_class::<S>),
         )
         .route(
             "/databases/:db_id/schema/classes/:class_id",
             get(handlers::get_database_class::<S>),
         )
         .route(
-            "/databases/:db_id/schema/classes/:class_id",
-            patch(handlers::update_database_class::<S>),
-        )
-        .route(
-            "/databases/:db_id/schema/classes/:class_id",
-            delete(handlers::delete_database_class::<S>),
-        )
-        .route(
             "/databases/:db_id/instances",
             get(handlers::list_database_instances::<S>),
-        )
-        .route(
-            "/databases/:db_id/instances",
-            post(handlers::upsert_database_instance::<S>),
         )
         .route(
             "/databases/:db_id/instances/:id",
             get(handlers::get_database_instance::<S>),
         )
-        .route(
-            "/databases/:db_id/instances/:id",
-            patch(handlers::update_database_instance::<S>),
-        )
-        .route(
-            "/databases/:db_id/instances/:id",
-            delete(handlers::delete_database_instance::<S>),
-        )
-        // Branch management
+        // Branch management - READ-ONLY
         .route(
             "/databases/:db_id/branches",
             get(handlers::list_branches::<S>),
@@ -191,59 +133,23 @@ pub fn create_router<S: Store + 'static>() -> Router<Arc<S>> {
             "/databases/:db_id/branches/:branch_id",
             patch(handlers::update_branch_status::<S>),
         )
-        // Branch-level data access - READ-ONLY (use commit-specific endpoints for reads)
-        // MODIFICATION ENDPOINTS DEPRECATED - use working-commit endpoints instead
+        // Branch-level data access - READ-ONLY
+        // For modifications, use working-commit endpoints
         .route(
             "/databases/:db_id/branches/:branch_id/schema",
             get(handlers::get_schema::<S>),
-        )
-        // DEPRECATED: Schema modifications must go through working-commit endpoints
-        .route(
-            "/databases/:db_id/branches/:branch_id/schema",
-            post(handlers::upsert_schema::<S>),
-        )
-        // DEPRECATED: Class additions must go through working-commit endpoints
-        .route(
-            "/databases/:db_id/branches/:branch_id/schema/classes",
-            post(handlers::add_class::<S>),
         )
         .route(
             "/databases/:db_id/branches/:branch_id/schema/classes/:class_id",
             get(handlers::get_class::<S>),
         )
-        // DEPRECATED: Class updates must go through working-commit endpoints
-        .route(
-            "/databases/:db_id/branches/:branch_id/schema/classes/:class_id",
-            patch(handlers::update_class::<S>),
-        )
-        // DEPRECATED: Class deletions must go through working-commit endpoints  
-        .route(
-            "/databases/:db_id/branches/:branch_id/schema/classes/:class_id",
-            delete(handlers::delete_class::<S>),
-        )
-        // Instance management (many per branch) - READ-ONLY
         .route(
             "/databases/:db_id/branches/:branch_id/instances",
             get(handlers::list_instances::<S>),
         )
-        // DEPRECATED: Instance creation must go through working-commit endpoints
-        .route(
-            "/databases/:db_id/branches/:branch_id/instances",
-            post(handlers::upsert_instance::<S>),
-        )
         .route(
             "/databases/:db_id/branches/:branch_id/instances/:id",
             get(handlers::get_instance::<S>),
-        )
-        // DEPRECATED: Instance updates must go through working-commit endpoints
-        .route(
-            "/databases/:db_id/branches/:branch_id/instances/:id",
-            patch(handlers::update_instance::<S>),
-        )
-        // DEPRECATED: Instance deletions must go through working-commit endpoints
-        .route(
-            "/databases/:db_id/branches/:branch_id/instances/:id",
-            delete(handlers::delete_instance::<S>),
         )
         // Branch operations (git-like)
         // NEW: Two-phase merge operations with conflict resolution
@@ -276,15 +182,15 @@ pub fn create_router<S: Store + 'static>() -> Router<Arc<S>> {
             "/databases/:db_id/branches/:branch_id/delete",
             post(branch_handlers::delete_branch::<S>),
         )
-        // Instance-specific query/solve endpoints
-        // .route(
-        //     "/databases/:db_id/instances/:instance_id/query",
-        //     post(handlers::query_instance_configuration::<S>),
-        // )
-        // .route(
-        //     "/databases/:db_id/branches/:branch_id/instances/:instance_id/query",
-        //     post(handlers::query_branch_instance_configuration::<S>),
-        // )
+        // Instance-specific query/solve endpoints (GET with URL parameters)
+        .route(
+            "/databases/:db_id/instances/:instance_id/query",
+            get(handlers::get_database_instance_query::<S>),
+        )
+        .route(
+            "/databases/:db_id/branches/:branch_id/instances/:instance_id/query",
+            get(handlers::get_branch_instance_query::<S>),
+        )
         // Batch query endpoints for multiple objectives
         .route(
             "/databases/:db_id/instances/:instance_id/batch-query",
@@ -294,15 +200,20 @@ pub fn create_router<S: Store + 'static>() -> Router<Arc<S>> {
             "/databases/:db_id/branches/:branch_id/instances/:instance_id/batch-query",
             post(handlers::batch_query_branch_instance_configuration::<S>),
         )
-        // GET query endpoints with URL parameters for solver objectives
-        // .route(
-        //     "/databases/:db_id/branches/:branch_id/instances/:instance_id/query",
-        //     get(handlers::get_branch_instance_query::<S>),
-        // )
-        // .route(
-        //     "/databases/:db_id/commits/:commit_hash/instances/:instance_id/query",
-        //     get(handlers::get_commit_instance_query::<S>),
-        // )
+        // Analysis endpoints
+        .route(
+            "/databases/:db_id/instances/:instance_id/analysis",
+            post(handlers::analyze_database_instance::<S>),
+        )
+        .route(
+            "/databases/:db_id/branches/:branch_id/instances/:instance_id/analysis",
+            post(handlers::analyze_branch_instance::<S>),
+        )
+        // Commit-specific query endpoint
+        .route(
+            "/databases/:db_id/commits/:commit_hash/instances/:instance_id/query",
+            get(handlers::get_commit_instance_query::<S>),
+        )
         // Working Commit endpoints (staging changes before commit)
         .route(
             "/databases/:db_id/branches/:branch_id/working-commit",

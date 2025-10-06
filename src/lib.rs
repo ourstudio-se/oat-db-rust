@@ -14,9 +14,9 @@ pub use api::routes;
 // Export logic types (excluding conflicting merge types)
 pub use logic::{
     filter_instances, BranchOperationsV2, Expander, MergeValidationResult, PoolResolver,
-    SelectionResult, SimpleEvaluator, SimpleValidator, SolvePipeline, SolvePipelineWithStore,
-    ValidationError, ValidationErrorType, ValidationResult, ValidationWarning,
-    ValidationWarningType,
+    SelectionResult, SimpleEvaluator, SimpleValidator, SolveError, SolvePipeline,
+    SolvePipelineWithStore, ValidationError, ValidationErrorType, ValidationResult,
+    ValidationWarning, ValidationWarningType,
 };
 
 // Export all model types
@@ -653,8 +653,7 @@ mod tests {
 
     #[test]
     fn test_property_value_json_format() {
-        use crate::model::{PropertyValue, TypedValue, DataType};
-        use std::collections::HashMap;
+        use crate::model::PropertyValue;
         use serde_json;
         
         // Test exactly what the API is doing

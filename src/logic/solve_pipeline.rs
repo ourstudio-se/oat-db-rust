@@ -9,6 +9,25 @@ use pldag::Pldag;
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::time::Instant;
 
+/// Error type for solve pipeline failures
+#[derive(Debug, thiserror::Error)]
+pub enum SolveError {
+    /// No solution could be found - constraints are unsatisfiable
+    #[error("No solution found for objective(s): {objectives}. The constraints may be unsatisfiable or contradictory. Please review your class definitions, relationship quantifiers, and instance relationships.")]
+    UnsatisfiableConstraints { objectives: String },
+
+    /// Other errors (internal errors, data not found, etc.)
+    #[error(transparent)]
+    Other(#[from] anyhow::Error),
+}
+
+impl SolveError {
+    /// Check if this is an unsatisfiable constraints error (client error, 422)
+    pub fn is_unsatisfiable(&self) -> bool {
+        matches!(self, SolveError::UnsatisfiableConstraints { .. })
+    }
+}
+
 /// The solve pipeline orchestrates the complete solution process
 /// From CommitData + target instance → ConfigurationArtifact with ILP-ready data
 pub struct SolvePipeline<'a> {
@@ -28,7 +47,7 @@ impl<'a> SolvePipeline<'a> {
         target_instance_id: Id,
         objective_sets: Vec<(String, HashMap<String, f64>)>,
         derived_properties: Option<Vec<String>>,
-    ) -> Result<Vec<(String, ConfigurationArtifact)>> {
+    ) -> Result<Vec<(String, ConfigurationArtifact)>, SolveError> {
         let start_time = Instant::now();
         let mut phase_timings = Vec::new();
 
@@ -90,6 +109,134 @@ impl<'a> SolvePipeline<'a> {
         let elapsed = start_time.elapsed();
         // Use microseconds for precision, then convert to milliseconds
         // Ensure at least 1ms is reported even for very fast operations
+        let total_time = std::cmp::max(1, elapsed.as_micros() / 1000) as u64;
+
+        for ((objective_id, _), solution) in objective_sets.iter().zip(solutions.iter()) {
+            let mut artifact = self.compile_artifact(
+                request.clone(),
+                target_instance_id.clone(),
+                resolved_instances.clone(),
+                solution.clone(),
+                &id_mappings,
+                total_time,
+                &phase_timings,
+            )?;
+
+            // Only calculate derived properties if requested
+            if let Some(requested_props) = &derived_properties {
+                if !requested_props.is_empty() {
+                    for derived_property in instance_class.derived.iter() {
+                        // Only calculate if this property was requested
+                        if requested_props.contains(&derived_property.name) {
+                            match &derived_property.fn_short {
+                                Some(short) => {
+                                    let derived_value = self.resolved_derived_property(
+                                        &_target_instance,
+                                        &resolved_instances,
+                                        solution,
+                                        &short,
+                                    );
+                                    if let Some(value) = derived_value {
+                                        let mut property_map = HashMap::new();
+                                        property_map.insert("value".to_string(), value.clone());
+                                        artifact
+                                            .derived_properties
+                                            .insert(derived_property.name.clone(), property_map);
+                                    }
+                                }
+                                None => continue,
+                            }
+                        }
+                    }
+                }
+            }
+
+            results.push((objective_id.clone(), artifact));
+        }
+
+        Ok(results)
+    }
+
+    /// Execute the solve pipeline with multiple objective sets, derived properties, and custom constraints
+    ///
+    /// This variant allows you to add custom pldag constraints before solving.
+    /// The constraint_fn receives a mutable reference to the Pldag model and the IdMappings,
+    /// allowing you to add constraints using methods like set_gelineq.
+    pub fn solve_instance_with_constraints<F>(
+        &self,
+        request: NewConfigurationArtifact,
+        target_instance_id: Id,
+        objective_sets: Vec<(String, HashMap<String, f64>)>,
+        derived_properties: Option<Vec<String>>,
+        constraint_fn: F,
+    ) -> Result<Vec<(String, ConfigurationArtifact)>, SolveError>
+    where
+        F: FnOnce(&mut Pldag, &IdMappings) -> Result<(), SolveError>,
+    {
+        let start_time = Instant::now();
+        let mut phase_timings = Vec::new();
+
+        // Step 1: Get instances and schema from commit data
+        let phase_start = Instant::now();
+        let all_instances = self.commit_data.instances.clone();
+        let schema = &self.commit_data.schema;
+
+        // Find target instance (just validate it exists)
+        let _target_instance = all_instances
+            .iter()
+            .find(|i| i.id == target_instance_id)
+            .ok_or_else(|| {
+                anyhow::anyhow!("Target instance {} not found in commit", target_instance_id)
+            })?
+            .clone();
+        phase_timings.push(("fetch_data", phase_start.elapsed()));
+
+        // Step 2: Build dependency tree and filter instances early
+        let phase_start = Instant::now();
+        let dependencies = self.get_instance_dependencies(&target_instance_id, &all_instances)?;
+        let instances: Vec<Instance> = all_instances
+            .into_iter()
+            .filter(|inst| dependencies.contains(&inst.id))
+            .collect();
+        phase_timings.push(("filter_dependencies", phase_start.elapsed()));
+
+        // Step 3: Resolve all pool filters and materialize relationships for filtered instances
+        let phase_start = Instant::now();
+        let resolved_instances = self.resolve_all_relationships(instances, schema)?;
+        phase_timings.push(("resolve_relationships", phase_start.elapsed()));
+
+        // Step 4: Setup Pldag model
+        let phase_start = Instant::now();
+        let (mut model, id_mappings) =
+            self.setup_pldag_model(&target_instance_id, &resolved_instances, schema)?;
+        phase_timings.push(("setup_pldag", phase_start.elapsed()));
+
+        // Step 4.5: Apply custom constraints
+        let phase_start = Instant::now();
+        constraint_fn(&mut model, &id_mappings)?;
+        phase_timings.push(("apply_constraints", phase_start.elapsed()));
+
+        // Step 5: Map all objectives and solve with Pldag
+        let phase_start = Instant::now();
+        let solutions = self.solve_with_pldag_batch(
+            model,
+            id_mappings.get_pldag_id(&target_instance_id).unwrap(),
+            &objective_sets,
+            &id_mappings,
+            &id_mappings.pldag_to_our,
+        )?;
+        phase_timings.push(("solve", phase_start.elapsed()));
+
+        // Step 5.5: Evaluate derived properties for all instances
+        let instance_class = schema
+            .classes
+            .iter()
+            .find(|c| c.id == _target_instance.class_id)
+            .unwrap();
+
+        // Step 6: Compile solutions into artifacts
+        let mut results = Vec::new();
+        let elapsed = start_time.elapsed();
         let total_time = std::cmp::max(1, elapsed.as_micros() / 1000) as u64;
 
         for ((objective_id, _), solution) in objective_sets.iter().zip(solutions.iter()) {
@@ -688,7 +835,7 @@ impl<'a> SolvePipeline<'a> {
         mut model: Pldag,
         objectives: HashMap<&str, f64>,
         pldag_to_our: &HashMap<String, String>,
-    ) -> Result<HashMap<String, i64>> {
+    ) -> Result<HashMap<String, i64>, SolveError> {
         // Create root constraint (all instances must be valid)
         let all_vars: Vec<&str> = pldag_to_our.keys().map(|s| s.as_str()).collect();
         let root = if all_vars.is_empty() {
@@ -720,7 +867,9 @@ impl<'a> SolvePipeline<'a> {
             }
             Ok(our_solution)
         } else {
-            Ok(HashMap::new())
+            Err(SolveError::UnsatisfiableConstraints {
+                objectives: "default".to_string(),
+            })
         }
     }
 
@@ -732,7 +881,7 @@ impl<'a> SolvePipeline<'a> {
         objective_sets: &[(String, HashMap<String, f64>)],
         id_mappings: &IdMappings,
         pldag_to_our: &HashMap<String, String>,
-    ) -> Result<Vec<HashMap<String, i64>>> {
+    ) -> Result<Vec<HashMap<String, i64>>, SolveError> {
         // Map all objective sets to Pldag IDs
         let mut pldag_objectives = Vec::new();
         for (_, objectives) in objective_sets {
@@ -753,7 +902,9 @@ impl<'a> SolvePipeline<'a> {
 
         // Extract solutions and map back to our IDs
         let mut our_solutions = Vec::new();
-        for solution_opt in solutions {
+        let mut unsolvable_objectives = Vec::new();
+
+        for (idx, solution_opt) in solutions.into_iter().enumerate() {
             if let Some(solution) = solution_opt {
                 let mut our_solution = HashMap::new();
                 for (pldag_id, (value, _)) in solution {
@@ -763,6 +914,10 @@ impl<'a> SolvePipeline<'a> {
                 }
                 our_solutions.push(our_solution);
             } else {
+                // Track which objective failed to find a solution
+                if let Some((objective_id, _)) = objective_sets.get(idx) {
+                    unsolvable_objectives.push(objective_id.clone());
+                }
                 our_solutions.push(HashMap::new());
             }
         }
@@ -770,6 +925,13 @@ impl<'a> SolvePipeline<'a> {
         // Ensure we have a solution for each objective set
         while our_solutions.len() < objective_sets.len() {
             our_solutions.push(HashMap::new());
+        }
+
+        // If any objectives were unsolvable, return an error
+        if !unsolvable_objectives.is_empty() {
+            return Err(SolveError::UnsatisfiableConstraints {
+                objectives: unsolvable_objectives.join(", "),
+            });
         }
 
         Ok(our_solutions)
@@ -845,13 +1007,13 @@ impl<'a> SolvePipeline<'a> {
 }
 
 /// Helper struct to manage ID mappings between our system and Pldag
-struct IdMappings {
+pub struct IdMappings {
     /// Our instance ID -> Pldag variable ID
-    our_to_pldag: HashMap<String, String>,
+    pub our_to_pldag: HashMap<String, String>,
     /// Pldag variable ID -> Our instance ID
-    pldag_to_our: HashMap<String, String>,
+    pub pldag_to_our: HashMap<String, String>,
     /// Set of primitive instance IDs (directly used in Pldag)
-    primitives: HashSet<String>,
+    pub primitives: HashSet<String>,
 }
 
 impl IdMappings {
@@ -878,7 +1040,7 @@ impl IdMappings {
             .insert(pldag_id.to_string(), instance_id.to_string());
     }
 
-    fn get_pldag_id(&self, our_id: &str) -> Option<&str> {
+    pub fn get_pldag_id(&self, our_id: &str) -> Option<&str> {
         self.our_to_pldag.get(our_id).map(|s| s.as_str())
     }
 
@@ -919,7 +1081,7 @@ impl<'a, S: crate::store::traits::Store + crate::store::traits::CommitStore>
         request: NewConfigurationArtifact,
         target_instance_id: Id,
         objective: HashMap<String, f64>,
-    ) -> Result<ConfigurationArtifact> {
+    ) -> Result<ConfigurationArtifact, SolveError> {
         // Fetch the commit based on resolution context
         let commit = if let Some(commit_hash) = &request.resolution_context.commit_hash {
             // Fetch specific commit
@@ -940,23 +1102,23 @@ impl<'a, S: crate::store::traits::Store + crate::store::traits::CommitStore>
                     anyhow::anyhow!("Branch {} not found", request.resolution_context.branch_id)
                 })?;
 
-            if branch.current_commit_hash.is_empty() {
-                return Err(anyhow::anyhow!(
+            let Some(ref commit_hash) = branch.current_commit_hash else {
+                return Err(SolveError::Other(anyhow::anyhow!(
                     "Branch {} has no current commit",
                     request.resolution_context.branch_id
-                ));
-            }
+                )));
+            };
 
             self.store
-                .get_commit(&branch.current_commit_hash)
+                .get_commit(commit_hash)
                 .await?
-                .ok_or_else(|| anyhow::anyhow!("Commit {} not found", branch.current_commit_hash))?
+                .ok_or_else(|| anyhow::anyhow!("Commit {} not found", commit_hash))?
         };
 
         // Get commit data and create pipeline
         let commit_data = commit
             .get_data()
-            .map_err(|e| anyhow::anyhow!("Failed to read commit data: {}", e))?;
+            .map_err(|e| SolveError::Other(anyhow::anyhow!("Failed to read commit data: {}", e)))?;
         let pipeline = SolvePipeline::new(&commit_data);
         let result = pipeline.solve_instance_with_multiple_objectives_and_derived_properties(
             request,
@@ -969,7 +1131,7 @@ impl<'a, S: crate::store::traits::Store + crate::store::traits::CommitStore>
             .into_iter()
             .next()
             .map(|(_, artifact)| artifact)
-            .ok_or_else(|| anyhow::anyhow!("No artifact returned from solve"))
+            .ok_or_else(|| SolveError::Other(anyhow::anyhow!("No artifact returned from solve")))
     }
 
     /// Execute the solve pipeline with multiple objective sets for efficient batch solving
@@ -978,7 +1140,7 @@ impl<'a, S: crate::store::traits::Store + crate::store::traits::CommitStore>
         request: NewConfigurationArtifact,
         target_instance_id: Id,
         objective_sets: Vec<(String, HashMap<String, f64>)>,
-    ) -> Result<Vec<(String, ConfigurationArtifact)>> {
+    ) -> Result<Vec<(String, ConfigurationArtifact)>, SolveError> {
         self.solve_instance_with_multiple_objectives_and_derived_properties(
             request,
             target_instance_id,
@@ -995,7 +1157,7 @@ impl<'a, S: crate::store::traits::Store + crate::store::traits::CommitStore>
         target_instance_id: Id,
         objective_sets: Vec<(String, HashMap<String, f64>)>,
         derived_properties: Option<Vec<String>>,
-    ) -> Result<Vec<(String, ConfigurationArtifact)>> {
+    ) -> Result<Vec<(String, ConfigurationArtifact)>, SolveError> {
         // Fetch the commit based on resolution context
         let commit = if let Some(commit_hash) = &request.resolution_context.commit_hash {
             // Fetch specific commit
@@ -1016,23 +1178,23 @@ impl<'a, S: crate::store::traits::Store + crate::store::traits::CommitStore>
                     anyhow::anyhow!("Branch {} not found", request.resolution_context.branch_id)
                 })?;
 
-            if branch.current_commit_hash.is_empty() {
-                return Err(anyhow::anyhow!(
+            let Some(ref commit_hash) = branch.current_commit_hash else {
+                return Err(SolveError::Other(anyhow::anyhow!(
                     "Branch {} has no current commit",
                     request.resolution_context.branch_id
-                ));
-            }
+                )));
+            };
 
             self.store
-                .get_commit(&branch.current_commit_hash)
+                .get_commit(commit_hash)
                 .await?
-                .ok_or_else(|| anyhow::anyhow!("Commit {} not found", branch.current_commit_hash))?
+                .ok_or_else(|| anyhow::anyhow!("Commit {} not found", commit_hash))?
         };
 
         // Get commit data and create pipeline
         let commit_data = commit
             .get_data()
-            .map_err(|e| anyhow::anyhow!("Failed to read commit data: {}", e))?;
+            .map_err(|e| SolveError::Other(anyhow::anyhow!("Failed to read commit data: {}", e)))?;
         let pipeline = SolvePipeline::new(&commit_data);
         pipeline.solve_instance_with_multiple_objectives_and_derived_properties(
             request,

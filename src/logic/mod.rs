@@ -10,6 +10,7 @@ pub mod merge;
 pub mod pool_resolution;
 pub mod solve_pipeline;
 pub mod instance_filter;
+pub mod analysis;
 
 // pub use validate::*;
 pub use validate_simple::*;
@@ -22,5 +23,6 @@ pub use branch_ops_v2::*;
 pub use expand::*;
 pub use merge::*;
 pub use pool_resolution::*;
-pub use solve_pipeline::{SolvePipeline, SolvePipelineWithStore};
+pub use solve_pipeline::{SolveError, SolvePipeline, SolvePipelineWithStore};
 pub use instance_filter::*;
+pub use analysis::*;

@@ -35,11 +35,58 @@ pub struct Instance {
     pub updated_at: DateTime<Utc>,
 }
 
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize)]
 #[serde(untagged)]
 pub enum PropertyValue {
     Literal(TypedValue),
     Conditional(RuleSet),
+}
+
+// Custom deserialization to support both simple values and complex formats
+impl<'de> Deserialize<'de> for PropertyValue {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        let value = serde_json::Value::deserialize(deserializer)?;
+
+        // Try to parse as TypedValue (explicit format with "type" and "value" fields)
+        if let Ok(typed_value) = serde_json::from_value::<TypedValue>(value.clone()) {
+            return Ok(PropertyValue::Literal(typed_value));
+        }
+
+        // Try to parse as RuleSet (conditional property with "rules" field)
+        if let Ok(rule_set) = serde_json::from_value::<RuleSet>(value.clone()) {
+            return Ok(PropertyValue::Conditional(rule_set));
+        }
+
+        // Fallback: infer type from the raw JSON value
+        let typed_value = match &value {
+            serde_json::Value::String(s) => TypedValue {
+                value: serde_json::Value::String(s.clone()),
+                data_type: DataType::String,
+            },
+            serde_json::Value::Number(n) => TypedValue {
+                value: serde_json::Value::Number(n.clone()),
+                data_type: DataType::Number,
+            },
+            serde_json::Value::Bool(b) => TypedValue {
+                value: serde_json::Value::Bool(*b),
+                data_type: DataType::Boolean,
+            },
+            serde_json::Value::Null => TypedValue {
+                value: serde_json::Value::Null,
+                data_type: DataType::String, // Default to string for null
+            },
+            _ => {
+                return Err(serde::de::Error::custom(
+                    "Invalid property format: expected string, number, boolean, or structured type"
+                ));
+            }
+        };
+
+        Ok(PropertyValue::Literal(typed_value))
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]

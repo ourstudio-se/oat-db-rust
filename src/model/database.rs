@@ -47,7 +47,7 @@ pub struct Branch {
     pub description: Option<String>,
     pub created_at: String,             // ISO 8601 timestamp
     pub parent_branch_name: Option<String>,   // Which branch this was created from (within same database)
-    pub current_commit_hash: String,            // Current state identifier
+    pub current_commit_hash: Option<String>,    // Current state identifier (None for new branches)
     pub commit_message: Option<String>, // Latest commit message
     pub author: Option<String>,         // Who made the latest commit
     pub status: BranchStatus,
@@ -61,7 +61,7 @@ impl Branch {
             description: Some("Default main branch".to_string()),
             created_at: chrono::Utc::now().to_rfc3339(),
             parent_branch_name: None,     // Main branch has no parent
-            current_commit_hash: "".to_string(), // No commits yet
+            current_commit_hash: None, // No commits yet
             commit_message: Some("Initial commit".to_string()),
             author,
             status: BranchStatus::Active,
@@ -80,7 +80,7 @@ impl Branch {
             description,
             created_at: chrono::Utc::now().to_rfc3339(),
             parent_branch_name: None,     // No parent for new branches
-            current_commit_hash: generate_id(), // New branch gets fresh commit
+            current_commit_hash: Some(generate_id()), // New branch gets fresh commit
             commit_message: Some(format!("Created branch '{}'", name)),
             author,
             status: BranchStatus::Active,
@@ -100,7 +100,7 @@ impl Branch {
             description,
             created_at: chrono::Utc::now().to_rfc3339(),
             parent_branch_name: Some(parent_branch_name),
-            current_commit_hash: generate_id(), // New branch gets fresh commit
+            current_commit_hash: Some(generate_id()), // New branch gets fresh commit
             commit_message: Some(format!("Created branch '{}'", name)),
             author,
             status: BranchStatus::Active,
@@ -111,7 +111,7 @@ impl Branch {
         self.status = BranchStatus::Merged;
         if let Some(message) = commit_message {
             self.commit_message = Some(message);
-            self.current_commit_hash = generate_id();
+            self.current_commit_hash = Some(generate_id());
         }
     }
 

@@ -1,6 +1,6 @@
 # OAT-DB Rust: Git-like Combinatorial Database Backend
 
-A Rust-based backend for a combinatorial database system with **git-like branching**, **typed properties**, and **class-based schemas**. Features conditional properties, derived fields, and flexible relationship management with branch-based version control.
+A Rust-based backend for a combinatorial database system with **git-like branching**, **typed properties**, and **class-based schemas**. Features conditional properties, derived fields, and flexible relationship management with branch-based version control. **All data modifications are managed through working-commit endpoints** for proper version control and audit trails.
 
 ## 🌟 Key Features
 
@@ -127,36 +127,90 @@ cargo test
 - `GET /databases/{db_id}/branches` - List branches for database
 - `POST /databases/{db_id}/branches` - Create new branch
 - `GET /databases/{db_id}/branches/{branch_id}` - Get specific branch
+- `PATCH /databases/{db_id}/branches/{branch_id}` - Update branch status
 
-### Database-level Endpoints (Auto-select Main Branch)
+### Database-level Endpoints (Auto-select Main Branch) - READ ONLY
+
+**⚠️ All modifications must use working-commit endpoints**
 
 - `GET /databases/{db_id}/schema` - Get schema from main branch
-- `POST /databases/{db_id}/schema` - Create/update schema on main branch
-- `POST /databases/{db_id}/schema/classes` - Add new class to schema
 - `GET /databases/{db_id}/schema/classes/{class_id}` - Get individual class
-- `PATCH /databases/{db_id}/schema/classes/{class_id}` - Update individual class
-- `DELETE /databases/{db_id}/schema/classes/{class_id}` - Delete individual class
 - `GET /databases/{db_id}/instances` - List instances from main branch
-- `POST /databases/{db_id}/instances` - Create instance on main branch
 - `GET /databases/{db_id}/instances/{id}` - Get instance from main branch
-- `PATCH /databases/{db_id}/instances/{id}` - Update instance on main branch
-- `DELETE /databases/{db_id}/instances/{id}` - Delete instance from main branch
-- `GET /databases/{db_id}/instances/{id}/derived` - Get derived values from main branch
 
-### Branch-specific Endpoints (Explicit Branch Targeting)
+### Branch-specific Endpoints - READ ONLY
+
+**⚠️ All modifications must use working-commit endpoints**
 
 - `GET /databases/{db_id}/branches/{branch_id}/schema` - Get schema for specific branch
-- `POST /databases/{db_id}/branches/{branch_id}/schema` - Create/update schema on branch
-- `POST /databases/{db_id}/branches/{branch_id}/schema/classes` - Add new class to schema
 - `GET /databases/{db_id}/branches/{branch_id}/schema/classes/{class_id}` - Get individual class
-- `PATCH /databases/{db_id}/branches/{branch_id}/schema/classes/{class_id}` - Update individual class
-- `DELETE /databases/{db_id}/branches/{branch_id}/schema/classes/{class_id}` - Delete individual class
 - `GET /databases/{db_id}/branches/{branch_id}/instances` - List instances from branch
-- `POST /databases/{db_id}/branches/{branch_id}/instances` - Create instance on branch
 - `GET /databases/{db_id}/branches/{branch_id}/instances/{id}` - Get instance from branch
-- `PATCH /databases/{db_id}/branches/{branch_id}/instances/{id}` - Update instance on branch
-- `DELETE /databases/{db_id}/branches/{branch_id}/instances/{id}` - Delete instance from branch
-- `GET /databases/{db_id}/branches/{branch_id}/instances/{id}/derived` - Get derived values from branch
+
+### Working Commit Endpoints - **REQUIRED FOR ALL MODIFICATIONS**
+
+All data modifications must go through the working-commit workflow:
+
+#### Schema Modifications
+- `POST /databases/{db_id}/branches/{branch_id}/working-commit/schema/classes` - Add new class
+- `PATCH /databases/{db_id}/branches/{branch_id}/working-commit/schema/classes/{class_id}` - Update class
+- `DELETE /databases/{db_id}/branches/{branch_id}/working-commit/schema/classes/{class_id}` - Delete class
+
+#### Instance Modifications
+- `POST /databases/{db_id}/branches/{branch_id}/working-commit/instances` - Create instance
+- `PATCH /databases/{db_id}/branches/{branch_id}/working-commit/instances/{instance_id}` - Update or create instance
+- `DELETE /databases/{db_id}/branches/{branch_id}/working-commit/instances/{instance_id}` - Delete instance
+
+#### Working Commit Management
+- `POST /databases/{db_id}/branches/{branch_id}/working-commit` - Create staging area (auto-created if needed)
+- `GET /databases/{db_id}/branches/{branch_id}/working-commit` - View staged changes
+- `GET /databases/{db_id}/branches/{branch_id}/working-commit/validate` - Validate staged changes
+- `POST /databases/{db_id}/branches/{branch_id}/working-commit/commit` - Commit all staged changes
+- `DELETE /databases/{db_id}/branches/{branch_id}/working-commit` - Abandon staged changes
+
+### Query Endpoints - Simplified Format
+
+All query endpoints now accept simple property-weight pairs:
+
+#### Single Instance Queries (GET & POST)
+- `GET /databases/{db_id}/instances/{instance_id}/query?price=-1&weight=0.5&derived_properties=total_cost`
+- `GET /databases/{db_id}/branches/{branch_id}/instances/{instance_id}/query?price=-1`
+- `GET /databases/{db_id}/branches/{branch_id}/working-commit/instances/{instance_id}/query?price=-1`
+- `GET /databases/{db_id}/commits/{commit_hash}/instances/{instance_id}/query?price=-1`
+
+- `POST /databases/{db_id}/working-commit/instances/{instance_id}/query` - Body: `{"price": -1.0, "weight": 0.5, "derived_properties": ["total_cost"]}`
+- `POST /databases/{db_id}/branches/{branch_id}/working-commit/instances/{instance_id}/query` - Same simple format
+
+#### Batch Queries (POST)
+- `POST /databases/{db_id}/branches/{branch_id}/working-commit/instances/{instance_id}/batch-query`
+- `POST /databases/{db_id}/commits/{commit_hash}/instances/{instance_id}/batch-query`
+
+**Simple Batch Request Format:**
+```json
+{
+  "queries": [
+    {"id": "min_price", "price": -1.0, "weight": 0.5},
+    {"id": "max_comfort", "comfort": 1.0, "price": -0.5}
+  ],
+  "derived_properties": ["total_cost", "summary"]
+}
+```
+
+**Simple Batch Response Format:**
+```json
+{
+  "results": [
+    {
+      "id": "min_price",
+      "configuration": { /* ConfigurationArtifact */ }
+    },
+    {
+      "id": "max_comfort",
+      "configuration": { /* ConfigurationArtifact */ }
+    }
+  ]
+}
+```
 
 ### Type Validation Endpoints
 
@@ -182,26 +236,13 @@ cargo test
 
 ### Working Commit Endpoints (Git-like Staging)
 
-- `POST /databases/{db_id}/branches/{branch_id}/working-commit` - Create staging area for accumulating changes
+- `POST /databases/{db_id}/branches/{branch_id}/working-commit` - Create staging area (Note: normally not needed as branches auto-maintain working commits)
 - `GET /databases/{db_id}/branches/{branch_id}/working-commit` - View staged changes with **resolved relationships** (includes schema default pools)
 - `GET /databases/{db_id}/branches/{branch_id}/working-commit/validate` - Validate all staged changes before committing
 - `GET /databases/{db_id}/branches/{branch_id}/working-commit/raw` - View raw working commit data without relationship resolution
 - `POST /databases/{db_id}/branches/{branch_id}/working-commit/commit` - Commit all staged changes as single commit
 - `DELETE /databases/{db_id}/branches/{branch_id}/working-commit` - Abandon staged changes without committing
 
-### Working Commit Staging Routes (Auto-created if needed)
-
-- `PATCH /databases/{db_id}/branches/{branch_id}/working-commit/schema/classes/{class_id}` - Stage class schema updates
-- `PATCH /databases/{db_id}/branches/{branch_id}/working-commit/instances/{instance_id}` - Stage instance property updates
-
-### Configuration & Solve Endpoints
-
-- `POST /databases/{db_id}/instances/{instance_id}/query` - Query configuration for specific instance (main branch)
-- `POST /databases/{db_id}/branches/{branch_id}/instances/{instance_id}/query` - Query configuration for instance on specific branch
-- `POST /solve` - Legacy solve endpoint (deprecated - use instance-specific endpoints)
-- `GET /artifacts` - List configuration artifacts
-- `GET /artifacts/{artifact_id}` - Get specific configuration artifact
-- `GET /artifacts/{artifact_id}/summary` - Get artifact summary
 
 ### Query Parameters
 
@@ -289,7 +330,7 @@ Used for PATCH operations:
 ```json
 {
   "properties": {
-    "price": { "Literal": { "value": 299.99, "type": "Number" } }
+    "price": { "value": 299.99, "type": "number" }
   }
 }
 ```
@@ -395,7 +436,7 @@ curl -X PATCH http://localhost:7061/databases/furniture-db/instances/delux-under
   -H "Content-Type: application/json" \
   -d '{
     "properties": {
-      "price": {"Literal": {"value": 250.00, "type": "Number"}}
+      "price": {"value": 250.00, "type": "number"}
     }
   }'
 ```
@@ -475,9 +516,9 @@ curl -X POST http://localhost:7061/databases/furniture-db/branches/feature-new-t
     "id": "oak-leg-1",
     "class": "class-leg",
     "properties": {
-      "name": {"Literal": {"value": "Oak Table Leg #1", "type": "string"}},
-      "material": {"Literal": {"value": "Oak", "type": "string"}},
-      "price": {"Literal": {"value": 45, "type": "number"}}
+      "name": {"value": "Oak Table Leg #1", "type": "string"},
+      "material": {"value": "Oak", "type": "string"},
+      "price": {"value": 45, "type": "number"}
     }
   }'
 
@@ -490,9 +531,9 @@ curl -X POST http://localhost:7061/databases/furniture-db/branches/feature-new-t
     "id": "dining-table-001",
     "class": "class-table",
     "properties": {
-      "name": {"Literal": {"value": "Oak Dining Table", "type": "string"}},
-      "basePrice": {"Literal": {"value": 800, "type": "number"}},
-      "material": {"Literal": {"value": "Oak", "type": "string"}}
+      "name": {"value": "Oak Dining Table", "type": "string"},
+      "basePrice": {"value": 800, "type": "number"},
+      "material": {"value": "Oak", "type": "string"}
     },
     "relationships": {
       "legs": {"Ids": {"ids": ["oak-leg-1", "oak-leg-2", "oak-leg-3", "oak-leg-4"]}}
@@ -604,6 +645,8 @@ Response (200 OK):
 
 The OAT-DB includes a sophisticated **working commit system** that enables git-like staging of changes before creating permanent commits. This allows you to group multiple related changes into single, logical commits with clean history.
 
+**Note**: Each branch automatically maintains an active working commit. You don't need to manually create working commits - the system ensures one is always available.
+
 ### Core Concepts
 
 - **Working Commit**: A mutable staging area where you accumulate changes before committing
@@ -634,7 +677,7 @@ Working commits now provide **comprehensive relationship resolution** that match
 
 #### Staging Management
 
-- `POST /databases/{db_id}/branches/{branch_id}/working-commit` - Create staging area
+- `POST /databases/{db_id}/branches/{branch_id}/working-commit` - Create staging area (Note: rarely needed as branches auto-create working commits)
 - `GET /databases/{db_id}/branches/{branch_id}/working-commit` - View staged changes
 - `DELETE /databases/{db_id}/branches/{branch_id}/working-commit` - Abandon staged changes
 
@@ -648,31 +691,9 @@ Working commits now provide **comprehensive relationship resolution** that match
 
 Let's walk through adding a "description" property to the Color class and updating all existing color instances.
 
-#### Step 1: Create Staging Area
+#### Step 1: Stage Changes
 
-```bash
-# Start staging changes
-curl -X POST http://localhost:7061/databases/furniture_catalog/branches/main/working-commit \
-  -H "Content-Type: application/json" \
-  -d '{
-    "author": "developer@company.com"
-  }'
-```
-
-Response:
-
-```json
-{
-  "id": "working-commit-uuid",
-  "database_id": "furniture_catalog",
-  "branch_id": "main",
-  "author": "developer@company.com",
-  "status": "active",
-  "created_at": "2024-01-15T10:30:00Z",
-  "schema_data": {...},
-  "instances_data": [...]
-}
-```
+Since each branch automatically maintains a working commit, you can directly start making changes:
 
 #### Step 2: Stage Schema Change
 
@@ -698,10 +719,8 @@ curl -X PATCH http://localhost:7061/databases/furniture_catalog/instances/color-
   -d '{
     "properties": {
       "description": {
-        "Literal": {
-          "value": "A vibrant red color perfect for bold designs",
-          "type": "String"
-        }
+        "value": "A vibrant red color perfect for bold designs",
+        "type": "string"
       }
     }
   }'
@@ -712,10 +731,8 @@ curl -X PATCH http://localhost:7061/databases/furniture_catalog/instances/color-
   -d '{
     "properties": {
       "description": {
-        "Literal": {
-          "value": "A calming blue color ideal for modern aesthetics",
-          "type": "String"
-        }
+        "value": "A calming blue color ideal for modern aesthetics",
+        "type": "string"
       }
     }
   }'
@@ -726,10 +743,8 @@ curl -X PATCH http://localhost:7061/databases/furniture_catalog/instances/color-
   -d '{
     "properties": {
       "description": {
-        "Literal": {
-          "value": "An elegant gold color for luxury applications",
-          "type": "String"
-        }
+        "value": "An elegant gold color for luxury applications",
+        "type": "string"
       }
     }
   }'
@@ -875,6 +890,26 @@ Working commits integrate seamlessly with branch operations:
 - **Branch Switching**: Working commits are branch-specific
 - **Validation**: All staged changes are validated before committing
 
+### Create-If-Not-Exists for Instances
+
+The PATCH endpoint for working commit instances now supports creating instances if they don't exist:
+
+```bash
+# This will create the instance if it doesn't exist
+curl -X PATCH http://localhost:7061/databases/furniture_catalog/branches/main/working-commit/instances/new-color-001 \
+  -H "Content-Type: application/json" \
+  -d '{
+    "class": "class-color",  # Required when creating new instance
+    "properties": {
+      "name": {"value": "Purple", "type": "string"},
+      "price": {"value": 85, "type": "number"}
+    },
+    "relationships": {}
+  }'
+```
+
+**Important**: When creating a new instance via PATCH, the `class` or `class_id` field is required.
+
 ### Best Practices
 
 1. **Logical Grouping**: Group related schema and instance changes together
@@ -887,39 +922,40 @@ The working commit system provides the best of both worlds - the simplicity of d
 
 ## Property Type System
 
-All properties now include explicit typing:
+All properties include explicit typing. The API accepts properties in a straightforward format:
 
 ```json
 {
   "properties": {
     "name": {
-      "Literal": {
-        "value": "Oak Table",
-        "type": "string"
-      }
+      "value": "Oak Table",
+      "type": "string"
     },
     "price": {
-      "Literal": {
-        "value": 299.99,
-        "type": "number"
-      }
+      "value": 299.99,
+      "type": "number"
     },
     "inStock": {
-      "Literal": {
-        "value": true,
-        "type": "bool"
-      }
-    },
+      "value": true,
+      "type": "boolean"
+    }
+  }
+}
+```
+
+For conditional properties, use the rules-based format:
+
+```json
+{
+  "properties": {
     "dynamicPrice": {
-      "Conditional": {
-        "branches": [
-          {
-            "when": { "Has": { "rel": "size", "ids": ["large"] } },
-            "then": 399.99
-          }
-        ],
-        "default": 299.99
-      }
+      "rules": [
+        {
+          "when": { "all": ["size", "premium"] },
+          "then": 399.99
+        }
+      ],
+      "default": 299.99
     }
   }
 }

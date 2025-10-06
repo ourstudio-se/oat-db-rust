@@ -242,6 +242,117 @@ pub struct InstanceQueryRequest {
     pub derived_properties: Option<Vec<String>>,
 }
 
+/// Simple request for instance query with just property-weight pairs
+/// Example: {"price": -1.0, "weight": 0.5, "derived_properties": ["total_cost", "summary"]}
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct SimpleInstanceQueryRequest {
+    /// Map of property names to objective weights
+    /// Special key "derived_properties" is treated as a comma-separated list
+    #[serde(flatten)]
+    pub objectives: HashMap<String, serde_json::Value>,
+}
+
+impl SimpleInstanceQueryRequest {
+    /// Extract the objective weights (f64 values) from the request
+    pub fn get_objectives(&self) -> HashMap<String, f64> {
+        self.objectives
+            .iter()
+            .filter_map(|(k, v)| {
+                if k == "derived_properties" {
+                    None
+                } else {
+                    v.as_f64().map(|weight| (k.clone(), weight))
+                }
+            })
+            .collect()
+    }
+
+    /// Extract the derived properties list from the request
+    pub fn get_derived_properties(&self) -> Option<Vec<String>> {
+        self.objectives.get("derived_properties").and_then(|v| {
+            // Handle both array format and comma-separated string format
+            if let Some(arr) = v.as_array() {
+                Some(
+                    arr.iter()
+                        .filter_map(|s| s.as_str().map(|s| s.to_string()))
+                        .collect(),
+                )
+            } else if let Some(s) = v.as_str() {
+                Some(s.split(',').map(|s| s.trim().to_string()).collect())
+            } else {
+                None
+            }
+        })
+    }
+}
+
+/// Simple batch request for multiple queries with just a list of property-weight pairs
+/// Example: {
+///   "queries": [
+///     {"id": "min_price", "price": -1.0, "weight": 0.5},
+///     {"id": "max_comfort", "comfort": 1.0, "price": -0.5}
+///   ],
+///   "derived_properties": ["total_cost", "summary"]
+/// }
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct SimpleBatchInstanceQueryRequest {
+    /// List of query objectives, each with an optional "id" field
+    pub queries: Vec<HashMap<String, serde_json::Value>>,
+
+    /// Optional derived properties to include in all responses
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub derived_properties: Option<Vec<String>>,
+}
+
+impl SimpleBatchInstanceQueryRequest {
+    /// Convert to the format expected by the solve pipeline
+    pub fn to_objective_sets(&self) -> Vec<(String, HashMap<String, f64>)> {
+        self.queries
+            .iter()
+            .enumerate()
+            .map(|(idx, query)| {
+                // Extract ID if provided, otherwise generate one
+                let id = query
+                    .get("id")
+                    .and_then(|v| v.as_str())
+                    .map(|s| s.to_string())
+                    .unwrap_or_else(|| format!("query_{}", idx));
+
+                // Extract objectives (all numeric fields except "id")
+                let objectives: HashMap<String, f64> = query
+                    .iter()
+                    .filter_map(|(k, v)| {
+                        if k == "id" {
+                            None
+                        } else {
+                            v.as_f64().map(|weight| (k.clone(), weight))
+                        }
+                    })
+                    .collect();
+
+                (id, objectives)
+            })
+            .collect()
+    }
+}
+
+/// Simple response for batch queries - just a list of configurations with their IDs
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct SimpleBatchQueryResponse {
+    /// List of configuration results
+    pub results: Vec<SimpleConfigurationResult>,
+}
+
+/// A single configuration result in a simple batch query
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct SimpleConfigurationResult {
+    /// The query ID this configuration corresponds to
+    pub id: String,
+
+    /// The resulting configuration artifact
+    pub configuration: ConfigurationArtifact,
+}
+
 /// Request for batch instance queries with multiple objectives
 /// Returns multiple configurations, one for each objective set
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]

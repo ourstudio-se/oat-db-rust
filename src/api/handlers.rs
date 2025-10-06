@@ -18,7 +18,9 @@ use crate::model::{
     ClassDef, ClassDefUpdate, Commit, CommitTag, ConfigurationArtifact, ConfigurationResult,
     Database, Domain, ExpandedInstance, Id, Instance, InstanceFilter, NewClassDef, NewCommit,
     NewCommitTag, NewDatabase, NewWorkingCommit, PropertyValue, RelationshipSelection, Schema,
-    TagQuery, TagType, TaggedCommit, UserContext, WorkingCommit, WorkingCommitStatus,
+    SimpleBatchInstanceQueryRequest, SimpleBatchQueryResponse, SimpleConfigurationResult,
+    SimpleInstanceQueryRequest, TagQuery, TagType, TaggedCommit, UserContext, WorkingCommit,
+    WorkingCommitStatus,
 };
 use crate::store::traits::{
     BranchStore, CommitStore, DatabaseStore, Store, TagStore, VersionCompat, WorkingCommitStore,
@@ -42,7 +44,7 @@ pub async fn health_check() -> Json<HealthResponse> {
 
 #[derive(Debug, Deserialize)]
 pub struct InstanceQuery {
-    #[serde(rename = "class")]
+    #[serde(rename = "class", alias = "type")]
     pub class_id: Option<String>,
     pub expand: Option<String>,
     pub depth: Option<usize>,
@@ -360,8 +362,8 @@ pub async fn get_openapi_spec<S: Store>(_state: State<AppState<S>>) -> Json<serd
         "openapi": "3.0.3",
         "info": {
             "title": "OAT Database API",
-            "version": "2.0.0",
-            "description": "A git-like combinatorial database API with commit-based access and working-commit staging. Features include typed properties, conditional properties, **derived properties** (computed fields with expressions), pool resolution, and branch-based version control. **Breaking Change**: All data modifications now require working-commit endpoints.",
+            "version": "3.0.0",
+            "description": "A git-like combinatorial database API with commit-based access and working-commit staging. Features include typed properties, conditional properties, **derived properties** (computed fields with expressions), pool resolution, and branch-based version control.\n\n**Major Changes in v3.0:**\n- ✅ All data modifications require working-commit endpoints (proper version control)\n- ✅ Simplified query endpoints with simple property-weight pairs (GET & POST)\n- ✅ Simplified batch query format with just a list of objectives\n- ✅ Removed commit-based working-commit endpoints (conceptually incorrect)\n\n**⚠️ Important Note:**\nOnly endpoints containing `/working-commit/` in the path support POST/PATCH/DELETE operations for data modification. All database-level and branch-level endpoints without `/working-commit/` are READ-ONLY (GET only). Any POST/PATCH/DELETE operations shown for non-working-commit paths in this documentation are deprecated and will return errors.\n\n**Correct Modification Workflow:**\n1. Stage changes: POST/PATCH/DELETE `/databases/{db_id}/branches/{branch_id}/working-commit/...`\n2. Validate: GET `/databases/{db_id}/branches/{branch_id}/working-commit/validate`\n3. Commit: POST `/databases/{db_id}/branches/{branch_id}/working-commit/commit`",
             "contact": {
                 "name": "API Support"
             }
@@ -383,15 +385,15 @@ pub async fn get_openapi_spec<S: Store>(_state: State<AppState<S>>) -> Json<serd
             },
             {
                 "name": "Commit Data Access",
-                "description": "NEW: Read data from specific immutable commits (recommended)"
+                "description": "Read data from specific immutable commits"
             },
             {
                 "name": "Working Commit Operations",
-                "description": "NEW: Stage and commit changes using git-like workflow (required for all modifications)"
+                "description": "🚀 REQUIRED for all modifications: Stage and commit changes using git-like workflow"
             },
             {
                 "name": "Database Operations",
-                "description": "⚠️ DEPRECATED: Use commit-based endpoints instead"
+                "description": "Read-only operations on database main branch (auto-selects main branch)"
             },
             {
                 "name": "Branches",
@@ -399,15 +401,15 @@ pub async fn get_openapi_spec<S: Store>(_state: State<AppState<S>>) -> Json<serd
             },
             {
                 "name": "Branch Schema",
-                "description": "⚠️ DEPRECATED: Schema operations on specific branches - use working-commit endpoints instead"
+                "description": "Read-only schema access on specific branches"
             },
             {
                 "name": "Branch Instances",
-                "description": "⚠️ DEPRECATED: Instance operations on specific branches - use working-commit endpoints instead"
+                "description": "Read-only instance access on specific branches"
             },
             {
                 "name": "Branch Operations",
-                "description": "Git-like operations (merge, commit, delete)"
+                "description": "Git-like operations (merge, rebase, commit, delete)"
             },
             {
                 "name": "Type Validation",
@@ -418,8 +420,8 @@ pub async fn get_openapi_spec<S: Store>(_state: State<AppState<S>>) -> Json<serd
                 "description": "🚀 REQUIRED for all modifications: Git-like staging system with granular change tracking. Features comprehensive relationship resolution and field-level change details. All data modifications must go through working-commit endpoints."
             },
             {
-                "name": "Solve System",
-                "description": "Configuration solve pipeline operations"
+                "name": "Query & Solve",
+                "description": "Simplified query endpoints with property-weight pairs for configuration solving"
             },
             {
                 "name": "Artifacts",
@@ -609,104 +611,6 @@ pub async fn get_openapi_spec<S: Store>(_state: State<AppState<S>>) -> Json<serd
                             }
                         }
                     }
-                },
-                "post": {
-                    "tags": ["Database Operations"],
-                    "summary": "Create/update database schema (main branch)",
-                    "description": "Creates or updates the schema for the database's main branch",
-                    "parameters": [
-                        {
-                            "name": "db_id",
-                            "in": "path",
-                            "required": true,
-                            "description": "Database ID",
-                            "schema": {
-                                "type": "string"
-                            }
-                        }
-                    ],
-                    "requestBody": {
-                        "required": true,
-                        "content": {
-                            "application/json": {
-                                "schema": {
-                                    "$ref": "#/components/schemas/Schema"
-                                }
-                            }
-                        }
-                    },
-                    "responses": {
-                        "200": {
-                            "description": "Schema created/updated successfully",
-                            "content": {
-                                "application/json": {
-                                    "schema": {
-                                        "$ref": "#/components/schemas/Schema"
-                                    }
-                                }
-                            }
-                        },
-                        "400": {
-                            "description": "Bad request",
-                            "content": {
-                                "application/json": {
-                                    "schema": {
-                                        "$ref": "#/components/schemas/ErrorResponse"
-                                    }
-                                }
-                            }
-                        }
-                    }
-                }
-            },
-            "/databases/{db_id}/schema/classes": {
-                "post": {
-                    "tags": ["Database Operations"],
-                    "summary": "Add class to database schema (main branch)",
-                    "description": "Adds a new class to the database's main branch schema",
-                    "parameters": [
-                        {
-                            "name": "db_id",
-                            "in": "path",
-                            "required": true,
-                            "description": "Database ID",
-                            "schema": {
-                                "type": "string"
-                            }
-                        }
-                    ],
-                    "requestBody": {
-                        "required": true,
-                        "content": {
-                            "application/json": {
-                                "schema": {
-                                    "$ref": "#/components/schemas/NewClassDef"
-                                }
-                            }
-                        }
-                    },
-                    "responses": {
-                        "200": {
-                            "description": "Class added successfully",
-                            "content": {
-                                "application/json": {
-                                    "schema": {
-                                        "$ref": "#/components/schemas/ClassDef"
-                                    }
-                                }
-                            }
-                        },
-                        "400": {
-                            "description": "Bad request",
-                            "content": {
-                                "application/json": {
-                                    "schema": {
-                                        "$ref": "#/components/schemas/ErrorResponse"
-                                    }
-                                }
-                            }
-                        }
-                    }
                 }
             },
             "/databases/{db_id}/instances": {
@@ -766,54 +670,6 @@ pub async fn get_openapi_spec<S: Store>(_state: State<AppState<S>>) -> Json<serd
                         },
                         "404": {
                             "description": "Database not found",
-                            "content": {
-                                "application/json": {
-                                    "schema": {
-                                        "$ref": "#/components/schemas/ErrorResponse"
-                                    }
-                                }
-                            }
-                        }
-                    }
-                },
-                "post": {
-                    "tags": ["Database Operations"],
-                    "summary": "Create/update database instance (main branch)",
-                    "description": "Creates or updates an instance in the database's main branch",
-                    "parameters": [
-                        {
-                            "name": "db_id",
-                            "in": "path",
-                            "required": true,
-                            "description": "Database ID",
-                            "schema": {
-                                "type": "string"
-                            }
-                        }
-                    ],
-                    "requestBody": {
-                        "required": true,
-                        "content": {
-                            "application/json": {
-                                "schema": {
-                                    "$ref": "#/components/schemas/Instance"
-                                }
-                            }
-                        }
-                    },
-                    "responses": {
-                        "200": {
-                            "description": "Instance created/updated successfully",
-                            "content": {
-                                "application/json": {
-                                    "schema": {
-                                        "$ref": "#/components/schemas/Instance"
-                                    }
-                                }
-                            }
-                        },
-                        "400": {
-                            "description": "Bad request",
                             "content": {
                                 "application/json": {
                                     "schema": {
@@ -1362,46 +1218,6 @@ pub async fn get_openapi_spec<S: Store>(_state: State<AppState<S>>) -> Json<serd
                     }
                 }
             },
-            "/databases/{db_id}/schema/classes": {
-                "post": {
-                    "tags": ["Database Operations"],
-                    "summary": "Add class to database schema (main branch)",
-                    "description": "Add a new class definition to the database's main branch schema",
-                    "parameters": [
-                        {
-                            "name": "db_id",
-                            "in": "path",
-                            "required": true,
-                            "description": "Database ID",
-                            "schema": {
-                                "type": "string"
-                            }
-                        }
-                    ],
-                    "requestBody": {
-                        "required": true,
-                        "content": {
-                            "application/json": {
-                                "schema": {
-                                    "$ref": "#/components/schemas/NewClassDef"
-                                }
-                            }
-                        }
-                    },
-                    "responses": {
-                        "201": {
-                            "description": "Class added successfully",
-                            "content": {
-                                "application/json": {
-                                    "schema": {
-                                        "$ref": "#/components/schemas/ClassDef"
-                                    }
-                                }
-                            }
-                        }
-                    }
-                }
-            },
             "/databases/{db_id}/schema/classes/{class_id}": {
                 "get": {
                     "tags": ["Database Operations"],
@@ -1437,83 +1253,6 @@ pub async fn get_openapi_spec<S: Store>(_state: State<AppState<S>>) -> Json<serd
                                     }
                                 }
                             }
-                        }
-                    }
-                },
-                "patch": {
-                    "tags": ["Database Operations"],
-                    "summary": "Update class in database (main branch)",
-                    "description": "Update an existing class definition in the database's main branch",
-                    "parameters": [
-                        {
-                            "name": "db_id",
-                            "in": "path",
-                            "required": true,
-                            "description": "Database ID",
-                            "schema": {
-                                "type": "string"
-                            }
-                        },
-                        {
-                            "name": "class_id",
-                            "in": "path",
-                            "required": true,
-                            "description": "Class ID",
-                            "schema": {
-                                "type": "string"
-                            }
-                        }
-                    ],
-                    "requestBody": {
-                        "required": true,
-                        "content": {
-                            "application/json": {
-                                "schema": {
-                                    "$ref": "#/components/schemas/ClassDefUpdate"
-                                }
-                            }
-                        }
-                    },
-                    "responses": {
-                        "200": {
-                            "description": "Class updated successfully",
-                            "content": {
-                                "application/json": {
-                                    "schema": {
-                                        "$ref": "#/components/schemas/ClassDef"
-                                    }
-                                }
-                            }
-                        }
-                    }
-                },
-                "delete": {
-                    "tags": ["Database Operations"],
-                    "summary": "Delete class from database (main branch)",
-                    "description": "Delete a class definition from the database's main branch",
-                    "parameters": [
-                        {
-                            "name": "db_id",
-                            "in": "path",
-                            "required": true,
-                            "description": "Database ID",
-                            "schema": {
-                                "type": "string"
-                            }
-                        },
-                        {
-                            "name": "class_id",
-                            "in": "path",
-                            "required": true,
-                            "description": "Class ID",
-                            "schema": {
-                                "type": "string"
-                            }
-                        }
-                    ],
-                    "responses": {
-                        "204": {
-                            "description": "Class deleted successfully"
                         }
                     }
                 }
@@ -1569,44 +1308,6 @@ pub async fn get_openapi_spec<S: Store>(_state: State<AppState<S>>) -> Json<serd
                                 "application/json": {
                                     "schema": {
                                         "$ref": "#/components/schemas/InstanceList"
-                                    }
-                                }
-                            }
-                        }
-                    }
-                },
-                "post": {
-                    "tags": ["Database Operations"],
-                    "summary": "Create/update instance in database (main branch)",
-                    "description": "Create or update an instance in the database's main branch",
-                    "parameters": [
-                        {
-                            "name": "db_id",
-                            "in": "path",
-                            "required": true,
-                            "description": "Database ID",
-                            "schema": {
-                                "type": "string"
-                            }
-                        }
-                    ],
-                    "requestBody": {
-                        "required": true,
-                        "content": {
-                            "application/json": {
-                                "schema": {
-                                    "$ref": "#/components/schemas/Instance"
-                                }
-                            }
-                        }
-                    },
-                    "responses": {
-                        "200": {
-                            "description": "Instance created/updated successfully",
-                            "content": {
-                                "application/json": {
-                                    "schema": {
-                                        "$ref": "#/components/schemas/Instance"
                                     }
                                 }
                             }
@@ -1670,87 +1371,10 @@ pub async fn get_openapi_spec<S: Store>(_state: State<AppState<S>>) -> Json<serd
                             }
                         }
                     }
-                },
-                "patch": {
-                    "tags": ["Database Operations"],
-                    "summary": "Update instance in database (main branch)",
-                    "description": "Update an existing instance in the database's main branch",
-                    "parameters": [
-                        {
-                            "name": "db_id",
-                            "in": "path",
-                            "required": true,
-                            "description": "Database ID",
-                            "schema": {
-                                "type": "string"
-                            }
-                        },
-                        {
-                            "name": "id",
-                            "in": "path",
-                            "required": true,
-                            "description": "Instance ID",
-                            "schema": {
-                                "type": "string"
-                            }
-                        }
-                    ],
-                    "requestBody": {
-                        "required": true,
-                        "content": {
-                            "application/json": {
-                                "schema": {
-                                    "$ref": "#/components/schemas/InstanceUpdate"
-                                }
-                            }
-                        }
-                    },
-                    "responses": {
-                        "200": {
-                            "description": "Instance updated successfully",
-                            "content": {
-                                "application/json": {
-                                    "schema": {
-                                        "$ref": "#/components/schemas/Instance"
-                                    }
-                                }
-                            }
-                        }
-                    }
-                },
-                "delete": {
-                    "tags": ["Database Operations"],
-                    "summary": "Delete instance from database (main branch)",
-                    "description": "Delete an instance from the database's main branch",
-                    "parameters": [
-                        {
-                            "name": "db_id",
-                            "in": "path",
-                            "required": true,
-                            "description": "Database ID",
-                            "schema": {
-                                "type": "string"
-                            }
-                        },
-                        {
-                            "name": "id",
-                            "in": "path",
-                            "required": true,
-                            "description": "Instance ID",
-                            "schema": {
-                                "type": "string"
-                            }
-                        }
-                    ],
-                    "responses": {
-                        "204": {
-                            "description": "Instance deleted successfully"
-                        }
-                    }
                 }
             },
             "/databases/{db_id}/instances/{id}/query": {
-                "post": {
+                "get": {
                     "tags": ["Database Operations"],
                     "summary": "Query instance configuration (main branch)",
                     "description": "Execute a configuration solve/query for a specific instance in the database's main branch",
@@ -2031,55 +1655,6 @@ pub async fn get_openapi_spec<S: Store>(_state: State<AppState<S>>) -> Json<serd
                     }
                 }
             },
-            "/databases/{db_id}/branches/{branch_id}/schema/classes": {
-                "post": {
-                    "tags": ["Branch Schema"],
-                    "summary": "Add class to branch schema",
-                    "description": "Add a new class definition to the branch schema",
-                    "parameters": [
-                        {
-                            "name": "db_id",
-                            "in": "path",
-                            "required": true,
-                            "description": "Database ID",
-                            "schema": {
-                                "type": "string"
-                            }
-                        },
-                        {
-                            "name": "branch_id",
-                            "in": "path",
-                            "required": true,
-                            "description": "Branch ID",
-                            "schema": {
-                                "type": "string"
-                            }
-                        }
-                    ],
-                    "requestBody": {
-                        "required": true,
-                        "content": {
-                            "application/json": {
-                                "schema": {
-                                    "$ref": "#/components/schemas/NewClassDef"
-                                }
-                            }
-                        }
-                    },
-                    "responses": {
-                        "201": {
-                            "description": "Class added successfully",
-                            "content": {
-                                "application/json": {
-                                    "schema": {
-                                        "$ref": "#/components/schemas/ClassDef"
-                                    }
-                                }
-                            }
-                        }
-                    }
-                }
-            },
             "/databases/{db_id}/branches/{branch_id}/schema/classes/{class_id}": {
                 "get": {
                     "tags": ["Branch Schema"],
@@ -2124,101 +1699,6 @@ pub async fn get_openapi_spec<S: Store>(_state: State<AppState<S>>) -> Json<serd
                                     }
                                 }
                             }
-                        }
-                    }
-                },
-                "patch": {
-                    "tags": ["Branch Schema"],
-                    "summary": "Update class in branch",
-                    "description": "Update an existing class definition in the branch schema",
-                    "parameters": [
-                        {
-                            "name": "db_id",
-                            "in": "path",
-                            "required": true,
-                            "description": "Database ID",
-                            "schema": {
-                                "type": "string"
-                            }
-                        },
-                        {
-                            "name": "branch_id",
-                            "in": "path",
-                            "required": true,
-                            "description": "Branch ID",
-                            "schema": {
-                                "type": "string"
-                            }
-                        },
-                        {
-                            "name": "class_id",
-                            "in": "path",
-                            "required": true,
-                            "description": "Class ID",
-                            "schema": {
-                                "type": "string"
-                            }
-                        }
-                    ],
-                    "requestBody": {
-                        "required": true,
-                        "content": {
-                            "application/json": {
-                                "schema": {
-                                    "$ref": "#/components/schemas/ClassDefUpdate"
-                                }
-                            }
-                        }
-                    },
-                    "responses": {
-                        "200": {
-                            "description": "Class updated successfully",
-                            "content": {
-                                "application/json": {
-                                    "schema": {
-                                        "$ref": "#/components/schemas/ClassDef"
-                                    }
-                                }
-                            }
-                        }
-                    }
-                },
-                "delete": {
-                    "tags": ["Branch Schema"],
-                    "summary": "Delete class from branch",
-                    "description": "Delete a class definition from the branch schema",
-                    "parameters": [
-                        {
-                            "name": "db_id",
-                            "in": "path",
-                            "required": true,
-                            "description": "Database ID",
-                            "schema": {
-                                "type": "string"
-                            }
-                        },
-                        {
-                            "name": "branch_id",
-                            "in": "path",
-                            "required": true,
-                            "description": "Branch ID",
-                            "schema": {
-                                "type": "string"
-                            }
-                        },
-                        {
-                            "name": "class_id",
-                            "in": "path",
-                            "required": true,
-                            "description": "Class ID",
-                            "schema": {
-                                "type": "string"
-                            }
-                        }
-                    ],
-                    "responses": {
-                        "204": {
-                            "description": "Class deleted successfully"
                         }
                     }
                 }
@@ -2283,53 +1763,6 @@ pub async fn get_openapi_spec<S: Store>(_state: State<AppState<S>>) -> Json<serd
                                 "application/json": {
                                     "schema": {
                                         "$ref": "#/components/schemas/InstanceList"
-                                    }
-                                }
-                            }
-                        }
-                    }
-                },
-                "post": {
-                    "tags": ["Branch Instances"],
-                    "summary": "Create/update instance in branch",
-                    "description": "Create or update an instance in a specific branch",
-                    "parameters": [
-                        {
-                            "name": "db_id",
-                            "in": "path",
-                            "required": true,
-                            "description": "Database ID",
-                            "schema": {
-                                "type": "string"
-                            }
-                        },
-                        {
-                            "name": "branch_id",
-                            "in": "path",
-                            "required": true,
-                            "description": "Branch ID",
-                            "schema": {
-                                "type": "string"
-                            }
-                        }
-                    ],
-                    "requestBody": {
-                        "required": true,
-                        "content": {
-                            "application/json": {
-                                "schema": {
-                                    "$ref": "#/components/schemas/Instance"
-                                }
-                            }
-                        }
-                    },
-                    "responses": {
-                        "200": {
-                            "description": "Instance created/updated successfully",
-                            "content": {
-                                "application/json": {
-                                    "schema": {
-                                        "$ref": "#/components/schemas/Instance"
                                     }
                                 }
                             }
@@ -2402,105 +1835,10 @@ pub async fn get_openapi_spec<S: Store>(_state: State<AppState<S>>) -> Json<serd
                             }
                         }
                     }
-                },
-                "patch": {
-                    "tags": ["Branch Instances"],
-                    "summary": "Update instance in branch",
-                    "description": "Update an existing instance in a branch",
-                    "parameters": [
-                        {
-                            "name": "db_id",
-                            "in": "path",
-                            "required": true,
-                            "description": "Database ID",
-                            "schema": {
-                                "type": "string"
-                            }
-                        },
-                        {
-                            "name": "branch_id",
-                            "in": "path",
-                            "required": true,
-                            "description": "Branch ID",
-                            "schema": {
-                                "type": "string"
-                            }
-                        },
-                        {
-                            "name": "id",
-                            "in": "path",
-                            "required": true,
-                            "description": "Instance ID",
-                            "schema": {
-                                "type": "string"
-                            }
-                        }
-                    ],
-                    "requestBody": {
-                        "required": true,
-                        "content": {
-                            "application/json": {
-                                "schema": {
-                                    "$ref": "#/components/schemas/InstanceUpdate"
-                                }
-                            }
-                        }
-                    },
-                    "responses": {
-                        "200": {
-                            "description": "Instance updated successfully",
-                            "content": {
-                                "application/json": {
-                                    "schema": {
-                                        "$ref": "#/components/schemas/Instance"
-                                    }
-                                }
-                            }
-                        }
-                    }
-                },
-                "delete": {
-                    "tags": ["Branch Instances"],
-                    "summary": "Delete instance from branch",
-                    "description": "Delete an instance from a branch",
-                    "parameters": [
-                        {
-                            "name": "db_id",
-                            "in": "path",
-                            "required": true,
-                            "description": "Database ID",
-                            "schema": {
-                                "type": "string"
-                            }
-                        },
-                        {
-                            "name": "branch_id",
-                            "in": "path",
-                            "required": true,
-                            "description": "Branch ID",
-                            "schema": {
-                                "type": "string"
-                            }
-                        },
-                        {
-                            "name": "id",
-                            "in": "path",
-                            "required": true,
-                            "description": "Instance ID",
-                            "schema": {
-                                "type": "string"
-                            }
-                        }
-                    ],
-                    "responses": {
-                        "204": {
-                            "description": "Instance deleted successfully"
-                        }
-                    }
                 }
             },
             "/databases/{db_id}/branches/{branch_id}/instances/{id}/query": {
-                "post": {
+                "get": {
                     "tags": ["Branch Instances"],
                     "summary": "Query instance configuration (specific branch)",
                     "description": "Execute a configuration solve/query for a specific instance in a specific branch",
@@ -3450,8 +2788,8 @@ pub async fn get_openapi_spec<S: Store>(_state: State<AppState<S>>) -> Json<serd
             "/databases/{db_id}/branches/{branch_id}/working-commit/schema/classes/{class_id}": {
                 "patch": {
                     "tags": ["Working Commits"],
-                    "summary": "Stage class schema update",
-                    "description": "Updates a class schema in the working commit. If no working commit exists, one is automatically created.",
+                    "summary": "Stage class schema upsert",
+                    "description": "Creates or updates a class schema in the working commit. If the class doesn't exist, it will be created. If no working commit exists, one is automatically created.",
                     "parameters": [
                         {
                             "name": "db_id",
@@ -6964,12 +6302,33 @@ pub async fn upsert_database<S: Store>(
     // Update the database to reference the main branch
     database.default_branch_name = main_branch.name.clone();
     match store.upsert_database(database.clone()).await {
-        Ok(()) => Ok(Json(database)),
+        Ok(()) => {}
         Err(e) => {
             return Err((
                 StatusCode::INTERNAL_SERVER_ERROR,
                 Json(ErrorResponse::new(&format!(
                     "Failed to update database with main branch: {}",
+                    e
+                ))),
+            ))
+        }
+    }
+
+    // Create an initial working commit for the main branch
+    let new_working_commit = NewWorkingCommit {
+        author: Some("System".to_string()),
+    };
+
+    match store
+        .create_working_commit(&database.id, &main_branch.name, new_working_commit)
+        .await
+    {
+        Ok(_) => Ok(Json(database)),
+        Err(e) => {
+            return Err((
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(ErrorResponse::new(&format!(
+                    "Failed to create initial working commit: {}",
                     e
                 ))),
             ))
@@ -7145,8 +6504,8 @@ pub async fn list_branches<S: Store + CommitStore + TagStore + WorkingCommitStor
 
             // For each filtered branch, fetch commit data and tags
             for branch in filtered_branches {
-                let current_commit = if !branch.current_commit_hash.is_empty() {
-                    match store.get_commit(&branch.current_commit_hash).await {
+                let current_commit = if let Some(ref commit_hash) = branch.current_commit_hash {
+                    match store.get_commit(commit_hash).await {
                         Ok(Some(commit)) => {
                             // Get tags for this commit
                             let tags = store
@@ -7241,8 +6600,8 @@ pub async fn get_branch<S: Store + CommitStore + TagStore + WorkingCommitStore>(
             }
 
             // Get commit data and tags if branch has a commit
-            let current_commit = if !branch.current_commit_hash.is_empty() {
-                match store.get_commit(&branch.current_commit_hash).await {
+            let current_commit = if let Some(ref commit_hash) = branch.current_commit_hash {
+                match store.get_commit(commit_hash).await {
                     Ok(Some(commit)) => {
                         // Get tags for this commit
                         let tags = store
@@ -7428,10 +6787,7 @@ pub async fn upsert_branch<S: Store>(
             }
         } else {
             // No parent branch - start with empty commit hash
-            (
-                String::new(),
-                Some(format!("Created branch '{}'", request.name)),
-            )
+            (None, Some(format!("Created branch '{}'", request.name)))
         };
 
     // Create new branch with server-generated fields
@@ -7529,13 +6885,6 @@ pub async fn list_instances<S: Store>(
         Err(error_response) => return Err(error_response),
     };
 
-    let _filter = query.class_id.map(|class_id| InstanceFilter {
-        types: Some(vec![class_id]),
-        where_clause: None,
-        sort: None,
-        limit: None,
-    });
-
     // Get working_commit for this branch
     let working_commit = match store
         .get_active_working_commit_for_branch(&db_id, &branch_name)
@@ -7558,13 +6907,19 @@ pub async fn list_instances<S: Store>(
         }
     };
 
-    let mut expanded_instances = Vec::new();
     let instances = working_commit.instances_data.clone();
     let schema = working_commit.schema_data.clone();
 
-    let instances_vec = instances.clone(); // Clone instances to avoid consuming them
-    for instance in instances {
-        match Expander::expand_instance(&instance, &instances_vec, &schema).await {
+    // Filter instances by type/class if specified
+    let filtered_instances: Vec<_> = if let Some(ref class_id) = query.class_id {
+        instances.into_iter().filter(|inst| &inst.class_id == class_id).collect()
+    } else {
+        instances
+    };
+
+    let mut expanded_instances = Vec::new();
+    for instance in filtered_instances.clone() {
+        match Expander::expand_instance(&instance, &filtered_instances, &schema).await {
             Ok(expanded) => expanded_instances.push(expanded),
             Err(e) => {
                 return Err((
@@ -7888,13 +7243,6 @@ pub async fn list_database_instances<S: Store>(
 ) -> Result<Json<ListResponse<InstanceResponse>>, (StatusCode, Json<ErrorResponse>)> {
     let main_branch_name = get_main_branch_name(&*store, &db_id).await?;
 
-    let _filter = query.class_id.map(|class_id| InstanceFilter {
-        types: Some(vec![class_id]),
-        where_clause: None,
-        sort: None,
-        limit: None,
-    });
-
     // Get the working commit for the main branch
     let working_commit = match store
         .get_active_working_commit_for_branch(&db_id, &main_branch_name)
@@ -7918,9 +7266,17 @@ pub async fn list_database_instances<S: Store>(
     };
     let instances = working_commit.instances_data.clone();
     let schema = working_commit.schema_data.clone();
+
+    // Filter instances by type/class if specified
+    let filtered_instances: Vec<_> = if let Some(ref class_id) = query.class_id {
+        instances.into_iter().filter(|inst| &inst.class_id == class_id).collect()
+    } else {
+        instances
+    };
+
     let mut instance_responses = Vec::new();
-    for instance in instances.clone() {
-        match Expander::expand_instance(&instance, &instances, &schema).await {
+    for instance in filtered_instances.clone() {
+        match Expander::expand_instance(&instance, &filtered_instances, &schema).await {
             Ok(expanded) => instance_responses.push(InstanceResponse::Expanded(expanded)),
             Err(e) => {
                 return Err((
@@ -8650,13 +8006,10 @@ async fn batch_query_instance_configuration_impl<S: Store>(
 
     // Build ResolutionContext from path parameters and request
     // Use branch's current commit hash if not explicitly provided in request
-    let commit_hash = request.commit_hash.clone().or_else(|| {
-        if branch.current_commit_hash.is_empty() {
-            None
-        } else {
-            Some(branch.current_commit_hash.clone())
-        }
-    });
+    let commit_hash = request
+        .commit_hash
+        .clone()
+        .or(branch.current_commit_hash.clone());
 
     let resolution_context = ResolutionContext {
         database_id: database_id.clone(),
@@ -8751,13 +8104,10 @@ async fn batch_query_instance_configuration_impl<S: Store>(
 pub async fn batch_query_working_commit_instance_configuration<S: Store + WorkingCommitStore>(
     State(store): State<AppState<S>>,
     Path((db_id, branch_name, instance_id)): Path<(Id, String, Id)>,
-    RequestJson(request): RequestJson<BatchInstanceQueryRequest>,
-) -> Result<Json<BatchQueryResponse>, (StatusCode, Json<ErrorResponse>)> {
+    RequestJson(request): RequestJson<SimpleBatchInstanceQueryRequest>,
+) -> Result<Json<SimpleBatchQueryResponse>, (StatusCode, Json<ErrorResponse>)> {
     use crate::logic::SolvePipelineWithStore;
     use crate::model::{NewConfigurationArtifact, ResolutionContext};
-    use std::time::Instant;
-
-    let batch_start = Instant::now();
 
     // Get the working commit for the branch
     let working_commits = match store
@@ -8817,35 +8167,22 @@ pub async fn batch_query_working_commit_instance_configuration<S: Store + Workin
     };
 
     // Build ResolutionContext for working commit
-    // Use branch's current commit hash if not explicitly provided in request
-    let commit_hash = request.commit_hash.clone().or_else(|| {
-        if branch.current_commit_hash.is_empty() {
-            None
-        } else {
-            Some(branch.current_commit_hash.clone())
-        }
-    });
-
     let resolution_context = ResolutionContext {
         database_id: db_id.clone(),
         branch_id: branch_name.clone(),
-        commit_hash,
-        policies: request.policies.clone(),
-        metadata: request.context_metadata.clone(),
+        commit_hash: branch.current_commit_hash.clone(),
+        policies: Default::default(),
+        metadata: None,
     };
 
     // OPTIMIZED: Process all objective sets in a single batch call
     let solve_request = NewConfigurationArtifact {
         resolution_context: resolution_context.clone(),
-        user_metadata: request.user_metadata.clone(),
+        user_metadata: None,
     };
 
-    // Convert objective sets to batch format
-    let objective_sets: Vec<(String, HashMap<String, f64>)> = request
-        .objectives
-        .iter()
-        .map(|obj_set| (obj_set.id.clone(), obj_set.objectives.clone()))
-        .collect();
+    // Convert simple request to batch format
+    let objective_sets = request.to_objective_sets();
 
     // Create solve pipeline and execute with batch optimization
     let pipeline = SolvePipelineWithStore::new(&*store);
@@ -8854,63 +8191,34 @@ pub async fn batch_query_working_commit_instance_configuration<S: Store + Workin
         .solve_instance_with_multiple_objectives_and_derived_properties(
             solve_request,
             instance_id.clone(),
-            objective_sets,
+            objective_sets.clone(),
             request.derived_properties.clone(),
         )
         .await;
 
-    // Process batch results
-    let mut configurations = Vec::new();
-    let mut successful_solutions = 0;
-    let mut failed_solutions = 0;
-
-    match batch_results {
-        Ok(results) => {
-            for (objective_id, artifact) in results {
-                configurations.push(ConfigurationResult {
-                    objective_id,
-                    artifact,
-                    success: true,
-                    error: None,
-                });
-                successful_solutions += 1;
-            }
+    // Process batch results into simple response format
+    let results = match batch_results {
+        Ok(artifacts) => {
+            artifacts
+                .into_iter()
+                .map(|(id, configuration)| SimpleConfigurationResult { id, configuration })
+                .collect()
         }
         Err(e) => {
-            // Handle batch failure - create failed results for all objectives
-            for objective_set in &request.objectives {
-                let failed_artifact = ConfigurationArtifact::new(
-                    generate_id(),
-                    resolution_context.clone(),
-                    request.user_metadata.clone(),
-                );
-
-                configurations.push(ConfigurationResult {
-                    objective_id: objective_set.id.clone(),
-                    artifact: failed_artifact,
-                    success: false,
-                    error: Some(format!("Batch solve failed: {}", e)),
-                });
-                failed_solutions += 1;
-            }
+            // Check if this is an unsatisfiable constraints error (client error)
+            let status_code = if e.is_unsatisfiable() {
+                StatusCode::UNPROCESSABLE_ENTITY // 422
+            } else {
+                StatusCode::INTERNAL_SERVER_ERROR // 500
+            };
+            return Err((
+                status_code,
+                Json(ErrorResponse::new(&format!("Batch solve failed: {}", e))),
+            ));
         }
-    }
-
-    let batch_metadata = BatchQueryMetadata {
-        total_time_ms: batch_start.elapsed().as_millis() as u64,
-        objectives_processed: request.objectives.len(),
-        successful_solutions,
-        failed_solutions,
-        queried_instance_id: instance_id,
-        database_id: db_id,
-        branch_id: branch_name,
-        commit_hash: resolution_context.commit_hash.clone(),
     };
 
-    let response = BatchQueryResponse {
-        configurations,
-        batch_metadata,
-    };
+    let response = SimpleBatchQueryResponse { results };
 
     Ok(Json(response))
 }
@@ -8919,13 +8227,10 @@ pub async fn batch_query_working_commit_instance_configuration<S: Store + Workin
 pub async fn batch_query_commit_instance_configuration<S: Store + CommitStore>(
     State(store): State<AppState<S>>,
     Path((db_id, commit_hash, instance_id)): Path<(Id, String, Id)>,
-    RequestJson(request): RequestJson<BatchInstanceQueryRequest>,
-) -> Result<Json<BatchQueryResponse>, (StatusCode, Json<ErrorResponse>)> {
+    RequestJson(request): RequestJson<SimpleBatchInstanceQueryRequest>,
+) -> Result<Json<SimpleBatchQueryResponse>, (StatusCode, Json<ErrorResponse>)> {
     use crate::logic::SolvePipelineWithStore;
     use crate::model::{NewConfigurationArtifact, ResolutionContext};
-    use std::time::Instant;
-
-    let batch_start = Instant::now();
 
     // Verify commit exists and belongs to the database
     let commit = match store.get_commit(&commit_hash).await {
@@ -8983,22 +8288,18 @@ pub async fn batch_query_commit_instance_configuration<S: Store + CommitStore>(
         database_id: db_id.clone(),
         branch_id: "commit".to_string(), // Use "commit" as branch_id for commit-specific queries
         commit_hash: Some(commit_hash.clone()),
-        policies: request.policies.clone(),
-        metadata: request.context_metadata.clone(),
+        policies: Default::default(),
+        metadata: None,
     };
 
     // OPTIMIZED: Process all objective sets in a single batch call
     let solve_request = NewConfigurationArtifact {
         resolution_context: resolution_context.clone(),
-        user_metadata: request.user_metadata.clone(),
+        user_metadata: None,
     };
 
-    // Convert objective sets to batch format
-    let objective_sets: Vec<(String, HashMap<String, f64>)> = request
-        .objectives
-        .iter()
-        .map(|obj_set| (obj_set.id.clone(), obj_set.objectives.clone()))
-        .collect();
+    // Convert simple request to batch format
+    let objective_sets = request.to_objective_sets();
 
     // Create solve pipeline and execute with batch optimization
     let pipeline = SolvePipelineWithStore::new(&*store);
@@ -9007,63 +8308,34 @@ pub async fn batch_query_commit_instance_configuration<S: Store + CommitStore>(
         .solve_instance_with_multiple_objectives_and_derived_properties(
             solve_request,
             instance_id.clone(),
-            objective_sets,
+            objective_sets.clone(),
             request.derived_properties.clone(),
         )
         .await;
 
-    // Process batch results
-    let mut configurations = Vec::new();
-    let mut successful_solutions = 0;
-    let mut failed_solutions = 0;
-
-    match batch_results {
-        Ok(results) => {
-            for (objective_id, artifact) in results {
-                configurations.push(ConfigurationResult {
-                    objective_id,
-                    artifact,
-                    success: true,
-                    error: None,
-                });
-                successful_solutions += 1;
-            }
+    // Process batch results into simple response format
+    let results = match batch_results {
+        Ok(artifacts) => {
+            artifacts
+                .into_iter()
+                .map(|(id, configuration)| SimpleConfigurationResult { id, configuration })
+                .collect()
         }
         Err(e) => {
-            // Handle batch failure - create failed results for all objectives
-            for objective_set in &request.objectives {
-                let failed_artifact = ConfigurationArtifact::new(
-                    generate_id(),
-                    resolution_context.clone(),
-                    request.user_metadata.clone(),
-                );
-
-                configurations.push(ConfigurationResult {
-                    objective_id: objective_set.id.clone(),
-                    artifact: failed_artifact,
-                    success: false,
-                    error: Some(format!("Batch solve failed: {}", e)),
-                });
-                failed_solutions += 1;
-            }
+            // Check if this is an unsatisfiable constraints error (client error)
+            let status_code = if e.is_unsatisfiable() {
+                StatusCode::UNPROCESSABLE_ENTITY // 422
+            } else {
+                StatusCode::INTERNAL_SERVER_ERROR // 500
+            };
+            return Err((
+                status_code,
+                Json(ErrorResponse::new(&format!("Batch solve failed: {}", e))),
+            ));
         }
-    }
-
-    let batch_metadata = BatchQueryMetadata {
-        total_time_ms: batch_start.elapsed().as_millis() as u64,
-        objectives_processed: request.objectives.len(),
-        successful_solutions,
-        failed_solutions,
-        queried_instance_id: instance_id,
-        database_id: db_id,
-        branch_id: format!("commit:{}", commit_hash),
-        commit_hash: resolution_context.commit_hash.clone(),
     };
 
-    let response = BatchQueryResponse {
-        configurations,
-        batch_metadata,
-    };
+    let response = SimpleBatchQueryResponse { results };
 
     Ok(Json(response))
 }
@@ -9532,7 +8804,7 @@ pub async fn commit_working_changes<S: WorkingCommitStore + CommitStore + Store>
                 .await
                 .unwrap()
                 .unwrap();
-            branch.current_commit_hash = commit.hash.clone();
+            branch.current_commit_hash = Some(commit.hash.clone());
             branch.commit_message = commit.message.clone();
             branch.author = commit.author.clone();
 
@@ -10234,6 +9506,193 @@ pub async fn get_commit_instance<S: CommitStore + DatabaseStore>(
             Json(ErrorResponse::new(&e.to_string())),
         )),
     }
+}
+
+/// Query/solve a specific instance from a commit with GET parameters
+pub async fn get_commit_instance_query<S: CommitStore + DatabaseStore + Store>(
+    State(store): State<AppState<S>>,
+    Path((db_id, commit_hash, instance_id)): Path<(Id, String, Id)>,
+    Query(params): Query<std::collections::HashMap<String, String>>,
+) -> Result<Json<ConfigurationArtifact>, (StatusCode, Json<ErrorResponse>)> {
+    // Verify database exists
+    match store.get_database(&db_id).await {
+        Ok(Some(_)) => {}
+        Ok(None) => {
+            return Err((
+                StatusCode::NOT_FOUND,
+                Json(ErrorResponse::new("Database not found")),
+            ))
+        }
+        Err(e) => {
+            return Err((
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(ErrorResponse::new(&e.to_string())),
+            ))
+        }
+    }
+
+    // Get commit data
+    let commit_data = match store.get_commit_data(&commit_hash).await {
+        Ok(Some(data)) => data,
+        Ok(None) => {
+            return Err((
+                StatusCode::NOT_FOUND,
+                Json(ErrorResponse::new("Commit not found")),
+            ))
+        }
+        Err(e) => {
+            return Err((
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(ErrorResponse::new(&e.to_string())),
+            ))
+        }
+    };
+
+    // Verify commit belongs to this database
+    if let Ok(Some(commit)) = store.get_commit(&commit_hash).await {
+        if commit.database_id != db_id {
+            return Err((
+                StatusCode::NOT_FOUND,
+                Json(ErrorResponse::new("Commit not found in this database")),
+            ));
+        }
+    } else {
+        return Err((
+            StatusCode::NOT_FOUND,
+            Json(ErrorResponse::new("Commit not found")),
+        ));
+    }
+
+    // Delegate to shared helper function
+    execute_instance_query(
+        db_id,
+        "".to_string(), // No branch for commit-based queries
+        Some(commit_hash),
+        instance_id,
+        commit_data.schema,
+        commit_data.instances,
+        params,
+    )
+    .await
+}
+
+/// Query/solve a specific instance from a branch with GET parameters (uses main branch current commit)
+pub async fn get_database_instance_query<S: Store + BranchStore + CommitStore>(
+    State(store): State<AppState<S>>,
+    Path((db_id, instance_id)): Path<(Id, Id)>,
+    Query(params): Query<std::collections::HashMap<String, String>>,
+) -> Result<Json<ConfigurationArtifact>, (StatusCode, Json<ErrorResponse>)> {
+    // Get main branch
+    let branch = match store.get_branch(&db_id, "main").await {
+        Ok(Some(branch)) => branch,
+        Ok(None) => {
+            return Err((
+                StatusCode::NOT_FOUND,
+                Json(ErrorResponse::new("Main branch not found")),
+            ))
+        }
+        Err(e) => {
+            return Err((
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(ErrorResponse::new(&e.to_string())),
+            ))
+        }
+    };
+
+    // Get commit data from branch's current commit
+    let commit_hash = branch.current_commit_hash.ok_or((
+        StatusCode::NOT_FOUND,
+        Json(ErrorResponse::new("Branch has no commits yet")),
+    ))?;
+
+    let commit_data = match store.get_commit_data(&commit_hash).await {
+        Ok(Some(data)) => data,
+        Ok(None) => {
+            return Err((
+                StatusCode::NOT_FOUND,
+                Json(ErrorResponse::new("Commit data not found")),
+            ))
+        }
+        Err(e) => {
+            return Err((
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(ErrorResponse::new(&e.to_string())),
+            ))
+        }
+    };
+
+    // Delegate to shared helper function
+    execute_instance_query(
+        db_id,
+        "main".to_string(),
+        Some(commit_hash),
+        instance_id,
+        commit_data.schema,
+        commit_data.instances,
+        params,
+    )
+    .await
+}
+
+/// Query/solve a specific instance from a branch with GET parameters
+pub async fn get_branch_instance_query<S: Store + BranchStore + CommitStore>(
+    State(store): State<AppState<S>>,
+    Path((db_id, branch_name, instance_id)): Path<(Id, String, Id)>,
+    Query(params): Query<std::collections::HashMap<String, String>>,
+) -> Result<Json<ConfigurationArtifact>, (StatusCode, Json<ErrorResponse>)> {
+    // Verify branch exists
+    verify_branch_exists(&*store, &db_id, &branch_name).await?;
+
+    // Get branch
+    let branch = match store.get_branch(&db_id, &branch_name).await {
+        Ok(Some(branch)) => branch,
+        Ok(None) => {
+            return Err((
+                StatusCode::NOT_FOUND,
+                Json(ErrorResponse::new("Branch not found")),
+            ))
+        }
+        Err(e) => {
+            return Err((
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(ErrorResponse::new(&e.to_string())),
+            ))
+        }
+    };
+
+    // Get commit data from branch's current commit
+    let commit_hash = branch.current_commit_hash.ok_or((
+        StatusCode::NOT_FOUND,
+        Json(ErrorResponse::new("Branch has no commits yet")),
+    ))?;
+
+    let commit_data = match store.get_commit_data(&commit_hash).await {
+        Ok(Some(data)) => data,
+        Ok(None) => {
+            return Err((
+                StatusCode::NOT_FOUND,
+                Json(ErrorResponse::new("Commit data not found")),
+            ))
+        }
+        Err(e) => {
+            return Err((
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(ErrorResponse::new(&e.to_string())),
+            ))
+        }
+    };
+
+    // Delegate to shared helper function
+    execute_instance_query(
+        db_id,
+        branch_name,
+        Some(commit_hash),
+        instance_id,
+        commit_data.schema,
+        commit_data.instances,
+        params,
+    )
+    .await
 }
 
 /// Validate all instances in the working commit
@@ -11021,15 +10480,15 @@ pub async fn update_working_commit_class<S: WorkingCommitStore + Store + BranchS
             )
         })?;
 
-    // Find and update the class in the working commit's schema
-    let class_found = {
+    // Find and update the class in the working commit's schema, or create it if it doesn't exist
+    let result_class = {
         if let Some(class) = working_commit
             .schema_data
             .classes
             .iter_mut()
             .find(|c| c.id == class_id)
         {
-            // Apply updates
+            // Class exists - apply updates
             if let Some(name) = class_update.name {
                 class.name = name;
             }
@@ -11051,34 +10510,47 @@ pub async fn update_working_commit_class<S: WorkingCommitStore + Store + BranchS
 
             // Update timestamps
             class.updated_at = chrono::Utc::now();
-            Some(class.clone())
+            class.clone()
         } else {
-            None
+            // Class doesn't exist - create it
+            let now = chrono::Utc::now();
+            let new_class = ClassDef {
+                id: class_id.clone(),
+                name: class_update.name.unwrap_or_else(|| class_id.clone()),
+                properties: class_update.properties.unwrap_or_default(),
+                relationships: class_update.relationships.unwrap_or_default(),
+                derived: class_update.derived.unwrap_or_default(),
+                description: class_update.description,
+                domain_constraint: class_update
+                    .domain_constraint
+                    .unwrap_or_else(Domain::binary),
+                base: Default::default(),
+                created_by: "system".to_string(),
+                created_at: now,
+                updated_by: "system".to_string(),
+                updated_at: now,
+            };
+
+            working_commit.schema_data.classes.push(new_class.clone());
+            new_class
         }
     };
 
-    if let Some(updated_class) = class_found {
-        // Update working commit timestamp
-        working_commit.touch();
+    // Update working commit timestamp
+    working_commit.touch();
 
-        // Save the working commit
-        if let Err(e) = store.update_working_commit(working_commit).await {
-            return Err((
-                StatusCode::INTERNAL_SERVER_ERROR,
-                Json(ErrorResponse::new(&format!(
-                    "Failed to update working commit: {}",
-                    e
-                ))),
-            ));
-        }
-
-        Ok(Json(updated_class))
-    } else {
-        Err((
-            StatusCode::NOT_FOUND,
-            Json(ErrorResponse::new("Class not found")),
-        ))
+    // Save the working commit
+    if let Err(e) = store.update_working_commit(working_commit).await {
+        return Err((
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(ErrorResponse::new(&format!(
+                "Failed to update working commit: {}",
+                e
+            ))),
+        ));
     }
+
+    Ok(Json(result_class))
 }
 
 /// Update an instance in the working commit
@@ -11217,7 +10689,10 @@ pub async fn update_working_commit_instance<S: WorkingCommitStore + Store + Bran
         Ok(Json(updated_instance))
     } else {
         // Instance not found - create a new one if class_id is provided
-        let class_id = match instance_update.get("class").or(instance_update.get("class_id")) {
+        let class_id = match instance_update
+            .get("class")
+            .or(instance_update.get("class_id"))
+        {
             Some(serde_json::Value::String(id)) => id.clone(),
             _ => {
                 return Err((
@@ -11264,10 +10739,9 @@ pub async fn update_working_commit_instance<S: WorkingCommitStore + Store + Bran
         }
 
         if let Some(relationships) = instance_update.get("relationships") {
-            match serde_json::from_value::<
-                std::collections::HashMap<String, RelationshipSelection>,
-            >(relationships.clone())
-            {
+            match serde_json::from_value::<std::collections::HashMap<String, RelationshipSelection>>(
+                relationships.clone(),
+            ) {
                 Ok(new_relationships) => {
                     new_instance.relationships = new_relationships;
                 }
@@ -11951,32 +11425,16 @@ pub async fn get_working_commit_instance<S: WorkingCommitStore + Store + BranchS
     }
 }
 
-/// Query working commit instance configuration (POST) - delegates to existing batch query  
+/// Query working commit instance configuration (POST) - simple version with property-weight pairs
+/// Accepts objectives in JSON body and optionally derived_properties in URL query params
 pub async fn query_working_commit_instance_configuration<
     S: WorkingCommitStore + Store + BranchStore,
 >(
     State(store): State<AppState<S>>,
     Path((db_id, branch_name, instance_id)): Path<(Id, String, Id)>,
-    RequestJson(request): RequestJson<BatchInstanceQueryRequest>,
-) -> Result<Json<BatchQueryResponse>, (StatusCode, Json<ErrorResponse>)> {
-    // Delegate to existing batch query handler
-    batch_query_working_commit_instance_configuration(
-        State(store),
-        Path((db_id, branch_name, instance_id)),
-        RequestJson(request),
-    )
-    .await
-}
-
-/// Query working commit instance configuration (GET) - simplified version
-pub async fn get_working_commit_instance_query<S: WorkingCommitStore + Store + BranchStore>(
-    State(store): State<AppState<S>>,
-    Path((db_id, branch_name, instance_id)): Path<(Id, String, Id)>,
-    Query(params): Query<std::collections::HashMap<String, String>>,
+    Query(query_params): Query<std::collections::HashMap<String, String>>,
+    RequestJson(request): RequestJson<SimpleInstanceQueryRequest>,
 ) -> Result<Json<ConfigurationArtifact>, (StatusCode, Json<ErrorResponse>)> {
-    use crate::logic::SolvePipeline;
-    use crate::model::{CommitData, ResolutionContext, ResolutionPolicies};
-
     // Verify branch exists
     verify_branch_exists(&*store, &db_id, &branch_name).await?;
 
@@ -12000,78 +11458,82 @@ pub async fn get_working_commit_instance_query<S: WorkingCommitStore + Store + B
         }
     };
 
-    // Convert URL parameters to objectives map and extract derived properties
-    let mut objective = HashMap::new();
-    let mut derived_properties: Option<Vec<String>> = None;
+    // Extract objectives from JSON body
+    let objectives = request.get_objectives();
 
-    for (key, value) in params {
-        if key == "derived_properties" {
-            // Handle comma-separated list of derived properties
-            derived_properties = Some(value.split(',').map(|s| s.trim().to_string()).collect());
-        } else if let Ok(weight) = value.parse::<f64>() {
-            objective.insert(key, weight);
-        }
-    }
-
-    let schema = working_commit.schema_data.clone();
-    let instances = working_commit.instances_data.clone();
-    let mut expanded_instances: Vec<Instance> = Vec::new();
-    for instance in &instances {
-        match Expander::expand_instance(instance, &instances, &schema).await {
-            Ok(expanded) => expanded_instances.push(expanded.to_instance()),
-            Err(_err) => {}
-        }
-    }
-
-    // Create commit data from working commit
-    let commit_data = CommitData {
-        schema: schema.clone(),
-        instances: expanded_instances,
-    };
-
-    // Build resolution context
-    let resolution_context = ResolutionContext {
-        database_id: db_id.clone(),
-        branch_id: branch_name.clone(),
-        commit_hash: None,
-        policies: ResolutionPolicies::default(),
-        metadata: None,
-    };
-
-    // Create solve request
-    let solve_request = crate::model::NewConfigurationArtifact {
-        resolution_context,
-        user_metadata: None,
-    };
-
-    // Create solve pipeline and execute with working commit data
-    let pipeline = SolvePipeline::new(&commit_data);
-
-    // Execute solve with objectives and/or derived properties if provided
-    let artifact = pipeline
-        .solve_instance_with_multiple_objectives_and_derived_properties(
-            solve_request,
-            instance_id,
-            vec![("default".to_string(), objective)],
-            derived_properties,
+    // Extract derived properties - URL query params take precedence over JSON body
+    let derived_properties = if query_params.contains_key("derived_properties") {
+        query_params.get("derived_properties").map(|s|
+            s.split(',').map(|s| s.trim().to_string()).collect()
         )
-        .map_err(|e| {
-            (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                Json(ErrorResponse::new(&format!("Solve failed: {}", e))),
-            )
-        })?
-        .into_iter()
-        .next()
-        .map(|(_, artifact)| artifact)
-        .ok_or_else(|| {
-            (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                Json(ErrorResponse::new("No solution returned")),
-            )
-        })?;
+    } else {
+        request.get_derived_properties()
+    };
 
-    Ok(Json(artifact))
+    // Convert to HashMap<String, String> format for the helper function
+    let params: std::collections::HashMap<String, String> = objectives
+        .iter()
+        .map(|(k, v)| (k.clone(), v.to_string()))
+        .collect();
+
+    let mut params = params;
+    if let Some(derived_props) = derived_properties {
+        params.insert("derived_properties".to_string(), derived_props.join(","));
+    }
+
+    // Delegate to shared helper function
+    execute_instance_query(
+        db_id,
+        branch_name,
+        None, // No commit_hash for working commits
+        instance_id,
+        working_commit.schema_data.clone(),
+        working_commit.instances_data.clone(),
+        params,
+    )
+    .await
+}
+
+/// Query working commit instance configuration (GET) - simplified version
+pub async fn get_working_commit_instance_query<S: WorkingCommitStore + Store + BranchStore>(
+    State(store): State<AppState<S>>,
+    Path((db_id, branch_name, instance_id)): Path<(Id, String, Id)>,
+    Query(params): Query<std::collections::HashMap<String, String>>,
+) -> Result<Json<ConfigurationArtifact>, (StatusCode, Json<ErrorResponse>)> {
+    // Verify branch exists
+    verify_branch_exists(&*store, &db_id, &branch_name).await?;
+
+    // Get the working commit
+    let working_commit = match store
+        .get_active_working_commit_for_branch(&db_id, &branch_name)
+        .await
+    {
+        Ok(Some(commit)) => commit,
+        Ok(None) => {
+            return Err((
+                StatusCode::NOT_FOUND,
+                Json(ErrorResponse::new("No active working commit found")),
+            ))
+        }
+        Err(e) => {
+            return Err((
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(ErrorResponse::new(&e.to_string())),
+            ))
+        }
+    };
+
+    // Delegate to shared helper function
+    execute_instance_query(
+        db_id,
+        branch_name,
+        None, // No commit_hash for working commits
+        instance_id,
+        working_commit.schema_data.clone(),
+        working_commit.instances_data.clone(),
+        params,
+    )
+    .await
 }
 
 // ============================================================================
@@ -12153,12 +11615,14 @@ pub async fn query_default_branch_working_commit_instance<
 >(
     State(store): State<AppState<S>>,
     Path((db_id, instance_id)): Path<(Id, Id)>,
-    RequestJson(request): RequestJson<BatchInstanceQueryRequest>,
-) -> Result<Json<BatchQueryResponse>, (StatusCode, Json<ErrorResponse>)> {
+    Query(query_params): Query<std::collections::HashMap<String, String>>,
+    RequestJson(request): RequestJson<SimpleInstanceQueryRequest>,
+) -> Result<Json<ConfigurationArtifact>, (StatusCode, Json<ErrorResponse>)> {
     let main_branch_name = get_main_branch_name(&*store, &db_id).await?;
     query_working_commit_instance_configuration(
         State(store),
         Path((db_id, main_branch_name, instance_id)),
+        Query(query_params),
         RequestJson(request),
     )
     .await
@@ -12181,90 +11645,96 @@ pub async fn get_default_branch_working_commit_instance_query<
     .await
 }
 
-// ============================================================================
-// COMMIT-BASED Working Commit Handlers (currently return errors)
-// ============================================================================
+/// Helper function to execute instance query with provided schema and instances
+async fn execute_instance_query(
+    db_id: Id,
+    branch_id: String,
+    commit_hash: Option<String>,
+    instance_id: Id,
+    schema: Schema,
+    instances: Vec<Instance>,
+    params: std::collections::HashMap<String, String>,
+) -> Result<Json<ConfigurationArtifact>, (StatusCode, Json<ErrorResponse>)> {
+    use crate::logic::SolvePipeline;
+    use crate::model::{CommitData, ResolutionContext, ResolutionPolicies};
 
-/// Get commit working commit - NOT IMPLEMENTED
-pub async fn get_commit_working_commit<S: WorkingCommitStore + Store + BranchStore>(
-    _store: State<AppState<S>>,
-    Path((_db_id, _commit_hash)): Path<(Id, String)>,
-) -> Result<Json<serde_json::Value>, (StatusCode, Json<ErrorResponse>)> {
-    Err((
-        StatusCode::NOT_IMPLEMENTED,
-        Json(ErrorResponse::new("Commit-based working commits are not yet implemented. Use branch-based endpoints instead.")),
-    ))
-}
+    // Convert URL parameters to objectives map and extract derived properties
+    let mut objective = HashMap::new();
+    let mut derived_properties: Option<Vec<String>> = None;
 
-/// Get commit working commit schema - NOT IMPLEMENTED  
-pub async fn get_commit_working_commit_schema<S: WorkingCommitStore + Store + BranchStore>(
-    _store: State<AppState<S>>,
-    Path((_db_id, _commit_hash)): Path<(Id, String)>,
-) -> Result<Json<serde_json::Value>, (StatusCode, Json<ErrorResponse>)> {
-    Err((
-        StatusCode::NOT_IMPLEMENTED,
-        Json(ErrorResponse::new("Commit-based working commits are not yet implemented. Use branch-based endpoints instead.")),
-    ))
-}
+    for (key, value) in params {
+        if key == "derived_properties" {
+            // Handle comma-separated list of derived properties
+            derived_properties = Some(value.split(',').map(|s| s.trim().to_string()).collect());
+        } else if let Ok(weight) = value.parse::<f64>() {
+            objective.insert(key, weight);
+        }
+    }
 
-/// Get commit working commit class - NOT IMPLEMENTED
-pub async fn get_commit_working_commit_class<S: WorkingCommitStore + Store + BranchStore>(
-    _store: State<AppState<S>>,
-    Path((_db_id, _commit_hash, _class_id)): Path<(Id, String, Id)>,
-) -> Result<Json<serde_json::Value>, (StatusCode, Json<ErrorResponse>)> {
-    Err((
-        StatusCode::NOT_IMPLEMENTED,
-        Json(ErrorResponse::new("Commit-based working commits are not yet implemented. Use branch-based endpoints instead.")),
-    ))
-}
+    // Expand instances
+    let mut expanded_instances: Vec<Instance> = Vec::new();
+    for instance in &instances {
+        match Expander::expand_instance(instance, &instances, &schema).await {
+            Ok(expanded) => expanded_instances.push(expanded.to_instance()),
+            Err(_err) => {}
+        }
+    }
 
-/// List commit working commit instances - NOT IMPLEMENTED
-pub async fn list_commit_working_commit_instances<S: WorkingCommitStore + Store + BranchStore>(
-    _store: State<AppState<S>>,
-    Path((_db_id, _commit_hash)): Path<(Id, String)>,
-    _query: Query<InstanceQuery>,
-) -> Result<Json<serde_json::Value>, (StatusCode, Json<ErrorResponse>)> {
-    Err((
-        StatusCode::NOT_IMPLEMENTED,
-        Json(ErrorResponse::new("Commit-based working commits are not yet implemented. Use branch-based endpoints instead.")),
-    ))
-}
+    // Create commit data
+    let commit_data = CommitData {
+        schema: schema.clone(),
+        instances: expanded_instances,
+    };
 
-/// Get commit working commit instance - NOT IMPLEMENTED
-pub async fn get_commit_working_commit_instance<S: WorkingCommitStore + Store + BranchStore>(
-    _store: State<AppState<S>>,
-    Path((_db_id, _commit_hash, _instance_id)): Path<(Id, String, Id)>,
-) -> Result<Json<serde_json::Value>, (StatusCode, Json<ErrorResponse>)> {
-    Err((
-        StatusCode::NOT_IMPLEMENTED,
-        Json(ErrorResponse::new("Commit-based working commits are not yet implemented. Use branch-based endpoints instead.")),
-    ))
-}
+    // Build resolution context
+    let resolution_context = ResolutionContext {
+        database_id: db_id.clone(),
+        branch_id: branch_id.clone(),
+        commit_hash: commit_hash.clone(),
+        policies: ResolutionPolicies::default(),
+        metadata: None,
+    };
 
-/// Query commit working commit instance (POST) - NOT IMPLEMENTED
-pub async fn query_commit_working_commit_instance<S: WorkingCommitStore + Store + BranchStore>(
-    _store: State<AppState<S>>,
-    Path((_db_id, _commit_hash, _instance_id)): Path<(Id, String, Id)>,
-    _request: RequestJson<BatchInstanceQueryRequest>,
-) -> Result<Json<BatchQueryResponse>, (StatusCode, Json<ErrorResponse>)> {
-    Err((
-        StatusCode::NOT_IMPLEMENTED,
-        Json(ErrorResponse::new("Commit-based working commits are not yet implemented. Use branch-based endpoints instead.")),
-    ))
-}
+    // Create solve request
+    let solve_request = crate::model::NewConfigurationArtifact {
+        resolution_context,
+        user_metadata: None,
+    };
 
-/// Query commit working commit instance (GET) - NOT IMPLEMENTED
-pub async fn get_commit_working_commit_instance_query<
-    S: WorkingCommitStore + Store + BranchStore,
->(
-    _store: State<AppState<S>>,
-    Path((_db_id, _commit_hash, _instance_id)): Path<(Id, String, Id)>,
-    _params: Query<std::collections::HashMap<String, String>>,
-) -> Result<Json<serde_json::Value>, (StatusCode, Json<ErrorResponse>)> {
-    Err((
-        StatusCode::NOT_IMPLEMENTED,
-        Json(ErrorResponse::new("Commit-based working commits are not yet implemented. Use branch-based endpoints instead.")),
-    ))
+    // Create solve pipeline and execute
+    let pipeline = SolvePipeline::new(&commit_data);
+
+    // Execute solve with objectives and/or derived properties if provided
+    let artifact = pipeline
+        .solve_instance_with_multiple_objectives_and_derived_properties(
+            solve_request,
+            instance_id,
+            vec![("default".to_string(), objective)],
+            derived_properties,
+        )
+        .map_err(|e| {
+            // Check if this is an unsatisfiable constraints error (client error)
+            let status_code = if e.is_unsatisfiable() {
+                StatusCode::UNPROCESSABLE_ENTITY // 422
+            } else {
+                StatusCode::INTERNAL_SERVER_ERROR // 500
+            };
+            (
+                status_code,
+                Json(ErrorResponse::new(&format!("Solve failed: {}", e))),
+            )
+        })?
+        .into_iter()
+        .next()
+        .map(|(_, artifact)| artifact)
+        .ok_or_else(|| {
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(ErrorResponse::new("No solution returned")),
+            )
+        })?;
+
+    Ok(Json(artifact))
 }
 
 /// Helper function to verify branch exists and belongs to database
@@ -12293,4 +11763,121 @@ async fn verify_branch_exists<S: BranchStore>(
             Json(ErrorResponse::new(&e.to_string())),
         )),
     }
+}
+
+/// Analyze instance properties - main branch
+pub async fn analyze_database_instance<S: Store + BranchStore + CommitStore>(
+    State(store): State<AppState<S>>,
+    Path((db_id, instance_id)): Path<(Id, Id)>,
+    RequestJson(method): RequestJson<crate::logic::analysis::AnalysisMethod>,
+) -> Result<Json<crate::logic::analysis::AnalysisResult>, (StatusCode, Json<ErrorResponse>)> {
+    // Get main branch
+    let branch = match store.get_branch(&db_id, "main").await {
+        Ok(Some(branch)) => branch,
+        Ok(None) => {
+            return Err((
+                StatusCode::NOT_FOUND,
+                Json(ErrorResponse::new("Main branch not found")),
+            ))
+        }
+        Err(e) => {
+            return Err((
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(ErrorResponse::new(&e.to_string())),
+            ))
+        }
+    };
+
+    // Get commit data
+    let commit_hash = branch.current_commit_hash.ok_or((
+        StatusCode::NOT_FOUND,
+        Json(ErrorResponse::new("Branch has no commits yet")),
+    ))?;
+
+    let commit_data = match store.get_commit_data(&commit_hash).await {
+        Ok(Some(data)) => data,
+        Ok(None) => {
+            return Err((
+                StatusCode::NOT_FOUND,
+                Json(ErrorResponse::new("Commit data not found")),
+            ))
+        }
+        Err(e) => {
+            return Err((
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(ErrorResponse::new(&e.to_string())),
+            ))
+        }
+    };
+
+    // Perform analysis
+    let result = crate::logic::analysis::InstanceAnalyzer::analyze(method, &instance_id, &commit_data)
+        .map_err(|e| {
+            (
+                StatusCode::BAD_REQUEST,
+                Json(ErrorResponse::new(&format!("Analysis failed: {}", e))),
+            )
+        })?;
+
+    Ok(Json(result))
+}
+
+/// Analyze instance properties - specific branch
+pub async fn analyze_branch_instance<S: Store + BranchStore + CommitStore>(
+    State(store): State<AppState<S>>,
+    Path((db_id, branch_name, instance_id)): Path<(Id, String, Id)>,
+    RequestJson(method): RequestJson<crate::logic::analysis::AnalysisMethod>,
+) -> Result<Json<crate::logic::analysis::AnalysisResult>, (StatusCode, Json<ErrorResponse>)> {
+    // Verify branch exists
+    verify_branch_exists(&*store, &db_id, &branch_name).await?;
+
+    // Get branch
+    let branch = match store.get_branch(&db_id, &branch_name).await {
+        Ok(Some(branch)) => branch,
+        Ok(None) => {
+            return Err((
+                StatusCode::NOT_FOUND,
+                Json(ErrorResponse::new("Branch not found")),
+            ))
+        }
+        Err(e) => {
+            return Err((
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(ErrorResponse::new(&e.to_string())),
+            ))
+        }
+    };
+
+    // Get commit data
+    let commit_hash = branch.current_commit_hash.ok_or((
+        StatusCode::NOT_FOUND,
+        Json(ErrorResponse::new("Branch has no commits yet")),
+    ))?;
+
+    let commit_data = match store.get_commit_data(&commit_hash).await {
+        Ok(Some(data)) => data,
+        Ok(None) => {
+            return Err((
+                StatusCode::NOT_FOUND,
+                Json(ErrorResponse::new("Commit data not found")),
+            ))
+        }
+        Err(e) => {
+            return Err((
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(ErrorResponse::new(&e.to_string())),
+            ))
+        }
+    };
+
+    // Perform analysis
+    let result = crate::logic::analysis::InstanceAnalyzer::analyze(method, &instance_id, &commit_data)
+        .map_err(|e| {
+            (
+                StatusCode::BAD_REQUEST,
+                Json(ErrorResponse::new(&format!("Analysis failed: {}", e))),
+            )
+        })?;
+
+    Ok(Json(result))
 }

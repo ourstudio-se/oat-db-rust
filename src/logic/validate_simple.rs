@@ -266,22 +266,28 @@ impl SimpleValidator {
                         }
 
                         // Check value-type consistency
-                        if let Err(msg) = Self::validate_value_type_consistency_detailed(
-                            &typed_value.value,
-                            &typed_value.data_type,
-                        ) {
-                            result.valid = false;
-                            result.errors.push(ValidationError {
-                                instance_id: instance.id.clone(),
-                                error_type: ValidationErrorType::ValueTypeInconsistency,
-                                message: format!(
-                                    "Value type inconsistency for property '{}' (ID: {}): {}",
-                                    prop_def.name, prop_def.id, msg
-                                ),
-                                property_name: Some(prop_key.clone()),
-                                expected: Some(format!("{:?}", typed_value.data_type)),
-                                actual: Some(format!("{:?}", typed_value.value)),
-                            });
+                        // Skip validation if property is optional (required=false) and value is null
+                        let is_optional = prop_def.required.unwrap_or(false) == false;
+                        let is_null = typed_value.value.is_null();
+
+                        if !(is_optional && is_null) {
+                            if let Err(msg) = Self::validate_value_type_consistency_detailed(
+                                &typed_value.value,
+                                &typed_value.data_type,
+                            ) {
+                                result.valid = false;
+                                result.errors.push(ValidationError {
+                                    instance_id: instance.id.clone(),
+                                    error_type: ValidationErrorType::ValueTypeInconsistency,
+                                    message: format!(
+                                        "Value type inconsistency for property '{}' (ID: {}): {}",
+                                        prop_def.name, prop_def.id, msg
+                                    ),
+                                    property_name: Some(prop_key.clone()),
+                                    expected: Some(format!("{:?}", typed_value.data_type)),
+                                    actual: Some(format!("{:?}", typed_value.value)),
+                                });
+                            }
                         }
                     }
                     PropertyValue::Conditional(rule_set) => {

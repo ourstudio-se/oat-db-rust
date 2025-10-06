@@ -92,9 +92,24 @@ pub struct RelationshipDef {
     pub quantifier: Quantifier,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub universe: Option<String>,
+    #[serde(default = "default_selection_type")]
+    #[serde(skip_serializing_if = "is_default_selection_type")]
     pub selection: SelectionType,
     /// Default pool for this relationship - what instances are considered by default
+    #[serde(default = "default_pool_all")]
     pub default_pool: DefaultPool,
+}
+
+fn default_selection_type() -> SelectionType {
+    SelectionType::ExplicitOrFilter
+}
+
+fn is_default_selection_type(selection: &SelectionType) -> bool {
+    matches!(selection, SelectionType::ExplicitOrFilter)
+}
+
+fn default_pool_all() -> DefaultPool {
+    DefaultPool::All
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]

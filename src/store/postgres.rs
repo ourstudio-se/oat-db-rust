@@ -293,19 +293,19 @@ impl SchemaStore for PostgresStore {
             .ok_or_else(|| anyhow::anyhow!("Branch not found: {}/{}", database_id, branch_name))?;
 
         // If no commit hash, return empty schema
-        if branch.current_commit_hash.is_empty() {
+        let Some(ref commit_hash) = branch.current_commit_hash else {
             return Ok(Some(Schema {
                 id: format!("schema-{}-{}", database_id, branch_name),
                 classes: Vec::new(),
                 description: Some("Empty schema".to_string()),
             }));
-        }
+        };
 
         // Get commit data
         let commit = self
-            .get_commit(&branch.current_commit_hash)
+            .get_commit(commit_hash)
             .await?
-            .ok_or_else(|| anyhow::anyhow!("Commit not found: {}", branch.current_commit_hash))?;
+            .ok_or_else(|| anyhow::anyhow!("Commit not found: {}", commit_hash))?;
 
         let commit_data = commit
             .get_data()
@@ -352,15 +352,15 @@ impl InstanceStore for PostgresStore {
             .ok_or_else(|| anyhow::anyhow!("Branch not found: {}/{}", database_id, branch_name))?;
 
         // If no commit hash, return None
-        if branch.current_commit_hash.is_empty() {
+        let Some(ref commit_hash) = branch.current_commit_hash else {
             return Ok(None);
-        }
+        };
 
         // Get commit data
         let commit = self
-            .get_commit(&branch.current_commit_hash)
+            .get_commit(commit_hash)
             .await?
-            .ok_or_else(|| anyhow::anyhow!("Commit not found: {}", branch.current_commit_hash))?;
+            .ok_or_else(|| anyhow::anyhow!("Commit not found: {}", commit_hash))?;
 
         let commit_data = commit
             .get_data()
@@ -386,15 +386,15 @@ impl InstanceStore for PostgresStore {
             .ok_or_else(|| anyhow::anyhow!("Branch not found: {}/{}", database_id, branch_name))?;
 
         // If no commit hash, return empty vec
-        if branch.current_commit_hash.is_empty() {
+        let Some(ref commit_hash) = branch.current_commit_hash else {
             return Ok(Vec::new());
-        }
+        };
 
         // Get commit data
         let commit = self
-            .get_commit(&branch.current_commit_hash)
+            .get_commit(commit_hash)
             .await?
-            .ok_or_else(|| anyhow::anyhow!("Commit not found: {}", branch.current_commit_hash))?;
+            .ok_or_else(|| anyhow::anyhow!("Commit not found: {}", commit_hash))?;
 
         let commit_data = commit
             .get_data()
@@ -448,7 +448,7 @@ impl PostgresStore {
             .await?
             .ok_or_else(|| anyhow::anyhow!("Branch not found: {}/{}", database_id, branch_name))?;
 
-        if branch.current_commit_hash.is_empty() {
+        if branch.current_commit_hash.is_none() {
             return Ok(Vec::new());
         }
 
@@ -766,7 +766,7 @@ impl crate::store::traits::WorkingCommitStore for PostgresStore {
             id: crate::model::generate_id(),
             database_id: database_id.clone(),
             branch_name: Some(branch_name.to_string()),
-            based_on_hash: branch.current_commit_hash,
+            based_on_hash: branch.current_commit_hash.unwrap_or_default(),
             author: new_working_commit.author,
             created_at: now.clone(),
             updated_at: now,

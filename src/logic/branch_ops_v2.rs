@@ -77,15 +77,13 @@ impl BranchOperationsV2 {
             .ok_or_else(|| anyhow!("Target branch '{}' not found", target_branch_name))?;
 
         // Get current commits
-        if source_branch.current_commit_hash.is_empty() {
+        let Some(source_commit) = source_branch.current_commit_hash else {
             return Err(anyhow!("Source branch has no commits"));
-        }
-        let source_commit = source_branch.current_commit_hash;
+        };
 
-        if target_branch.current_commit_hash.is_empty() {
+        let Some(target_commit) = target_branch.current_commit_hash else {
             return Err(anyhow!("Target branch has no commits"));
-        }
-        let target_commit = target_branch.current_commit_hash;
+        };
 
         // Find common ancestor
         let common_ancestor =
@@ -240,25 +238,23 @@ impl BranchOperationsV2 {
             .ok_or_else(|| anyhow!("Target branch '{}' not found", target_branch_name))?;
 
         // Get current commits
-        if source_branch.current_commit_hash.is_empty() {
+        let Some(source_commit) = source_branch.current_commit_hash else {
             return Ok(MergeValidationResult {
                 can_merge: false,
                 common_ancestor: None,
                 conflicts: vec![],
                 validation_result: None,
             });
-        }
-        let source_commit = source_branch.current_commit_hash;
+        };
 
-        if target_branch.current_commit_hash.is_empty() {
+        let Some(target_commit) = target_branch.current_commit_hash else {
             return Ok(MergeValidationResult {
                 can_merge: false,
                 common_ancestor: None,
                 conflicts: vec![],
                 validation_result: None,
             });
-        }
-        let target_commit = target_branch.current_commit_hash;
+        };
 
         // Find common ancestor
         let common_ancestor =
