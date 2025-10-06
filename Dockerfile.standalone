@@ -1,0 +1,111 @@
+# Standalone Dockerfile with embedded PostgreSQL
+FROM rust:1.86 AS builder
+
+WORKDIR /app
+
+# Install build dependencies including GLPK
+RUN apt-get update && apt-get install -y \
+    libglpk-dev \
+    pkg-config \
+    build-essential \
+    wget \
+    && rm -rf /var/lib/apt/lists/*
+
+# Detect architecture and set paths accordingly
+RUN ARCH=$(dpkg --print-architecture) && \
+    if [ "$ARCH" = "amd64" ]; then \
+        LIBDIR="/usr/lib/x86_64-linux-gnu"; \
+    elif [ "$ARCH" = "arm64" ]; then \
+        LIBDIR="/usr/lib/aarch64-linux-gnu"; \
+    else \
+        LIBDIR="/usr/lib"; \
+    fi && \
+    echo "Architecture: $ARCH, Library directory: $LIBDIR" && \
+    export PKG_CONFIG_PATH="/usr/lib/pkgconfig:$LIBDIR/pkgconfig:/usr/share/pkgconfig" && \
+    export GLPK_LIB_DIR="$LIBDIR" && \
+    export GLPK_INCLUDE_DIR="/usr/include" && \
+    mkdir -p "$LIBDIR/pkgconfig" && \
+    echo "prefix=/usr" > "$LIBDIR/pkgconfig/glpk.pc" && \
+    echo "exec_prefix=\${prefix}" >> "$LIBDIR/pkgconfig/glpk.pc" && \
+    echo "libdir=$LIBDIR" >> "$LIBDIR/pkgconfig/glpk.pc" && \
+    echo "includedir=\${prefix}/include" >> "$LIBDIR/pkgconfig/glpk.pc" && \
+    echo "" >> "$LIBDIR/pkgconfig/glpk.pc" && \
+    echo "Name: GLPK" >> "$LIBDIR/pkgconfig/glpk.pc" && \
+    echo "Description: GNU Linear Programming Kit" >> "$LIBDIR/pkgconfig/glpk.pc" && \
+    echo "Version: 5.0" >> "$LIBDIR/pkgconfig/glpk.pc" && \
+    echo "Libs: -L$LIBDIR -lglpk" >> "$LIBDIR/pkgconfig/glpk.pc" && \
+    echo "Cflags: -I\${includedir}" >> "$LIBDIR/pkgconfig/glpk.pc"
+
+# Set environment variables for the build
+ENV PKG_CONFIG_PATH=/usr/lib/pkgconfig:/usr/lib/x86_64-linux-gnu/pkgconfig:/usr/lib/aarch64-linux-gnu/pkgconfig:/usr/share/pkgconfig
+
+# Copy manifests
+COPY Cargo.toml Cargo.lock ./
+COPY .sqlx .sqlx
+
+# Copy source code
+COPY src ./src
+COPY migrations ./migrations
+
+# Build in release mode with SQLx offline
+ENV SQLX_OFFLINE=true
+RUN cargo build --release
+
+# Runtime stage with PostgreSQL
+FROM debian:bookworm-slim
+
+# Install runtime dependencies including PostgreSQL
+RUN apt-get update && apt-get install -y \
+    ca-certificates \
+    libssl3 \
+    libglpk40 \
+    postgresql-15 \
+    postgresql-client-15 \
+    supervisor \
+    curl \
+    && rm -rf /var/lib/apt/lists/*
+
+# Copy the binary
+COPY --from=builder /app/target/release/oat-db-rust /usr/local/bin/oat-db-rust
+
+# Create app directory and copy migrations
+RUN mkdir -p /app
+COPY --from=builder /app/migrations /app/migrations
+
+# Setup PostgreSQL
+USER postgres
+RUN /etc/init.d/postgresql start && \
+    psql --command "CREATE USER oatadmin WITH SUPERUSER PASSWORD 'embedded';" && \
+    createdb -O oatadmin oatdb && \
+    /etc/init.d/postgresql stop
+
+USER root
+
+# Configure PostgreSQL
+RUN sed -i "s/#listen_addresses = 'localhost'/listen_addresses = '*'/" /etc/postgresql/15/main/postgresql.conf && \
+    echo "host all all 127.0.0.1/32 md5" >> /etc/postgresql/15/main/pg_hba.conf
+
+# Copy startup script
+COPY start-standalone.sh /start.sh
+RUN chmod +x /start.sh
+
+# Set environment variables
+ENV DATABASE_URL="postgresql://oatadmin:embedded@localhost:5432/oatdb" \
+    OAT_SERVER_HOST="0.0.0.0" \
+    OAT_SERVER_PORT="7061" \
+    RUST_LOG="debug,sqlx=debug,oat_db_rust=trace" \
+    SQLX_LOG="debug" \
+    LOAD_SEED_DATA="false"
+
+# Create logs directory
+RUN mkdir -p /app/logs
+
+# Expose port
+EXPOSE 7061
+
+# Health check
+HEALTHCHECK --interval=30s --timeout=10s --start-period=90s --retries=5 \
+    CMD curl -f http://localhost:7061/health || exit 1
+
+# Start services
+CMD ["/start.sh"]
