@@ -6912,7 +6912,10 @@ pub async fn list_instances<S: Store>(
 
     // Filter instances by type/class if specified
     let filtered_instances: Vec<_> = if let Some(ref class_id) = query.class_id {
-        instances.into_iter().filter(|inst| &inst.class_id == class_id).collect()
+        instances
+            .into_iter()
+            .filter(|inst| &inst.class_id == class_id)
+            .collect()
     } else {
         instances
     };
@@ -7269,7 +7272,10 @@ pub async fn list_database_instances<S: Store>(
 
     // Filter instances by type/class if specified
     let filtered_instances: Vec<_> = if let Some(ref class_id) = query.class_id {
-        instances.into_iter().filter(|inst| &inst.class_id == class_id).collect()
+        instances
+            .into_iter()
+            .filter(|inst| &inst.class_id == class_id)
+            .collect()
     } else {
         instances
     };
@@ -8198,12 +8204,10 @@ pub async fn batch_query_working_commit_instance_configuration<S: Store + Workin
 
     // Process batch results into simple response format
     let results = match batch_results {
-        Ok(artifacts) => {
-            artifacts
-                .into_iter()
-                .map(|(id, configuration)| SimpleConfigurationResult { id, configuration })
-                .collect()
-        }
+        Ok(artifacts) => artifacts
+            .into_iter()
+            .map(|(id, configuration)| SimpleConfigurationResult { id, configuration })
+            .collect(),
         Err(e) => {
             // Check if this is an unsatisfiable constraints error (client error)
             let status_code = if e.is_unsatisfiable() {
@@ -8315,12 +8319,10 @@ pub async fn batch_query_commit_instance_configuration<S: Store + CommitStore>(
 
     // Process batch results into simple response format
     let results = match batch_results {
-        Ok(artifacts) => {
-            artifacts
-                .into_iter()
-                .map(|(id, configuration)| SimpleConfigurationResult { id, configuration })
-                .collect()
-        }
+        Ok(artifacts) => artifacts
+            .into_iter()
+            .map(|(id, configuration)| SimpleConfigurationResult { id, configuration })
+            .collect(),
         Err(e) => {
             // Check if this is an unsatisfiable constraints error (client error)
             let status_code = if e.is_unsatisfiable() {
@@ -9749,6 +9751,18 @@ pub async fn validate_working_commit<S: WorkingCommitStore + Store>(
         }
     }
 
+    // Additional validation: Check that all relationships resolve to at least one instance
+    for instance in &working_commit.instances_data {
+        if let Some(class_def) = working_commit.schema_data.get_class_by_id(&instance.class_id) {
+            SimpleValidator::validate_relationship_resolution(
+                instance,
+                class_def,
+                &working_commit.instances_data,
+                &mut result,
+            );
+        }
+    }
+
     Ok(Json(result))
 }
 
@@ -9827,6 +9841,18 @@ pub async fn validate_commit<S: CommitStore + Store>(
                         actual: None,
                     });
             }
+        }
+    }
+
+    // Additional validation: Check that all relationships resolve to at least one instance
+    for instance in &commit_data.instances {
+        if let Some(class_def) = commit_data.schema.get_class_by_id(&instance.class_id) {
+            SimpleValidator::validate_relationship_resolution(
+                instance,
+                class_def,
+                &commit_data.instances,
+                &mut result,
+            );
         }
     }
 
@@ -10507,6 +10533,9 @@ pub async fn update_working_commit_class<S: WorkingCommitStore + Store + BranchS
             if let Some(domain_constraint) = class_update.domain_constraint {
                 class.domain_constraint = domain_constraint;
             }
+            if let Some(base) = class_update.base {
+                class.base = base;
+            }
 
             // Update timestamps
             class.updated_at = chrono::Utc::now();
@@ -10524,7 +10553,7 @@ pub async fn update_working_commit_class<S: WorkingCommitStore + Store + BranchS
                 domain_constraint: class_update
                     .domain_constraint
                     .unwrap_or_else(Domain::binary),
-                base: Default::default(),
+                base: class_update.base.unwrap_or_default(),
                 created_by: "system".to_string(),
                 created_at: now,
                 updated_by: "system".to_string(),
@@ -11463,9 +11492,9 @@ pub async fn query_working_commit_instance_configuration<
 
     // Extract derived properties - URL query params take precedence over JSON body
     let derived_properties = if query_params.contains_key("derived_properties") {
-        query_params.get("derived_properties").map(|s|
-            s.split(',').map(|s| s.trim().to_string()).collect()
-        )
+        query_params
+            .get("derived_properties")
+            .map(|s| s.split(',').map(|s| s.trim().to_string()).collect())
     } else {
         request.get_derived_properties()
     };
@@ -11737,6 +11766,361 @@ async fn execute_instance_query(
     Ok(Json(artifact))
 }
 
+/// Execute propagate on instance - returns propagated bounds
+async fn execute_instance_propagate(
+    db_id: Id,
+    branch_id: String,
+    commit_hash: Option<String>,
+    instance_id: Id,
+    schema: Schema,
+    instances: Vec<Instance>,
+    params: std::collections::HashMap<String, String>,
+) -> Result<Json<serde_json::Value>, (StatusCode, Json<ErrorResponse>)> {
+    use crate::logic::SolvePipeline;
+    use crate::model::CommitData;
+    use std::collections::HashMap;
+
+    // Convert URL parameters to bounds map (key -> (min, max))
+    let mut bounds_input: HashMap<String, (i64, i64)> = HashMap::new();
+
+    for (key, value) in &params {
+        // Try to parse as single value (treated as fixed bound)
+        if let Ok(val) = value.parse::<i64>() {
+            bounds_input.insert(key.clone(), (val, val));
+        } else {
+            // Try to parse as range "min,max" or "min..max"
+            let parts: Vec<&str> = if value.contains(',') {
+                value.split(',').collect()
+            } else if value.contains("..") {
+                value.split("..").collect()
+            } else {
+                return Err((
+                    StatusCode::BAD_REQUEST,
+                    Json(ErrorResponse::new(&format!(
+                        "Invalid bound format for '{}': '{}'. Expected integer or 'min,max' or 'min..max'",
+                        key, value
+                    ))),
+                ));
+            };
+
+            if parts.len() == 2 {
+                match (
+                    parts[0].trim().parse::<i64>(),
+                    parts[1].trim().parse::<i64>(),
+                ) {
+                    (Ok(min), Ok(max)) => {
+                        bounds_input.insert(key.clone(), (min, max));
+                    }
+                    _ => {
+                        return Err((
+                            StatusCode::BAD_REQUEST,
+                            Json(ErrorResponse::new(&format!(
+                                "Invalid bound values for '{}': '{}'",
+                                key, value
+                            ))),
+                        ))
+                    }
+                }
+            } else {
+                return Err((
+                    StatusCode::BAD_REQUEST,
+                    Json(ErrorResponse::new(&format!(
+                        "Invalid bound format for '{}': '{}'",
+                        key, value
+                    ))),
+                ));
+            }
+        }
+    }
+
+    // Expand instances
+    let mut expanded_instances: Vec<Instance> = Vec::new();
+    for instance in &instances {
+        match Expander::expand_instance(instance, &instances, &schema).await {
+            Ok(expanded) => expanded_instances.push(expanded.to_instance()),
+            Err(_err) => {}
+        }
+    }
+
+    // Create commit data
+    let commit_data = CommitData {
+        schema: schema.clone(),
+        instances: expanded_instances.clone(),
+    };
+
+    // Create solve pipeline and setup pldag model
+    let pipeline = SolvePipeline::new(&commit_data);
+
+    // Get dependencies for target instance
+    let dependencies = pipeline
+        .get_instance_dependencies(&instance_id, &expanded_instances)
+        .map_err(|e| {
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(ErrorResponse::new(&format!(
+                    "Failed to get dependencies: {}",
+                    e
+                ))),
+            )
+        })?;
+
+    // Filter instances to only dependencies
+    let filtered_instances: Vec<Instance> = expanded_instances
+        .into_iter()
+        .filter(|inst| dependencies.contains(&inst.id))
+        .collect();
+
+    // Resolve relationships
+    let resolved_instances = pipeline
+        .resolve_all_relationships(filtered_instances, &schema)
+        .map_err(|e| {
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(ErrorResponse::new(&format!(
+                    "Failed to resolve relationships: {}",
+                    e
+                ))),
+            )
+        })?;
+
+    // Setup pldag model
+    let (model, id_mappings) = pipeline
+        .setup_pldag_model(&instance_id, &resolved_instances, &schema)
+        .map_err(|e| {
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(ErrorResponse::new(&format!(
+                    "Failed to setup pldag model: {}",
+                    e
+                ))),
+            )
+        })?;
+
+    // Map input bounds to pldag IDs
+    // We need to create a borrowed map for the propagate call
+    // First, collect the String keys that we'll use
+    let mut pldag_bound_strings: Vec<String> = Vec::new();
+    let mut pldag_bound_values: Vec<(i64, i64)> = Vec::new();
+
+    for (key, bound) in &bounds_input {
+        if let Some(pldag_id) = id_mappings.get_pldag_id(key) {
+            pldag_bound_strings.push(pldag_id.to_string());
+            pldag_bound_values.push(*bound);
+        }
+    }
+
+    // Create a borrowed map using the strings
+    // The type will be IndexMap<&str, (i64, i64)> which is what propagate expects
+    let pldag_bounds_borrowed = pldag_bound_strings
+        .iter()
+        .zip(pldag_bound_values.iter())
+        .map(|(k, v)| (k.as_str(), *v))
+        .collect();
+
+    // Call propagate
+    let propagated = model.propagate(&pldag_bounds_borrowed);
+
+    // Map back to our IDs
+    let mut result: HashMap<String, (i64, i64)> = HashMap::new();
+    for (pldag_id, bound) in propagated {
+        if let Some(our_id) = id_mappings.pldag_to_our.get(&pldag_id) {
+            result.insert(our_id.clone(), bound);
+        } else {
+            // This is an internal pldag ID, include it with the pldag prefix
+            result.insert(pldag_id, bound);
+        }
+    }
+
+    // Convert to JSON
+    let json_result = serde_json::to_value(result).map_err(|e| {
+        (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(ErrorResponse::new(&format!(
+                "Failed to serialize result: {}",
+                e
+            ))),
+        )
+    })?;
+
+    Ok(Json(json_result))
+}
+
+// Public handlers for propagate endpoint
+
+/// Propagate bounds for instance - main branch
+pub async fn get_database_instance_propagate<S: Store + BranchStore + CommitStore>(
+    State(store): State<AppState<S>>,
+    Path((db_id, instance_id)): Path<(Id, Id)>,
+    Query(params): Query<std::collections::HashMap<String, String>>,
+) -> Result<Json<serde_json::Value>, (StatusCode, Json<ErrorResponse>)> {
+    // Get main branch
+    let branch = match store.get_branch(&db_id, "main").await {
+        Ok(Some(branch)) => branch,
+        Ok(None) => {
+            return Err((
+                StatusCode::NOT_FOUND,
+                Json(ErrorResponse::new("Main branch not found")),
+            ))
+        }
+        Err(e) => {
+            return Err((
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(ErrorResponse::new(&e.to_string())),
+            ))
+        }
+    };
+
+    // Get commit data from branch's current commit
+    let commit_hash = branch.current_commit_hash.ok_or((
+        StatusCode::NOT_FOUND,
+        Json(ErrorResponse::new("Branch has no commits yet")),
+    ))?;
+
+    let commit_data = match store.get_commit_data(&commit_hash).await {
+        Ok(Some(data)) => data,
+        Ok(None) => {
+            return Err((
+                StatusCode::NOT_FOUND,
+                Json(ErrorResponse::new("Commit data not found")),
+            ))
+        }
+        Err(e) => {
+            return Err((
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(ErrorResponse::new(&e.to_string())),
+            ))
+        }
+    };
+
+    execute_instance_propagate(
+        db_id,
+        "main".to_string(),
+        Some(commit_hash.clone()),
+        instance_id,
+        commit_data.schema.clone(),
+        commit_data.instances.clone(),
+        params,
+    )
+    .await
+}
+
+/// Propagate bounds for instance - specific branch
+pub async fn get_branch_instance_propagate<S: Store + BranchStore + CommitStore>(
+    State(store): State<AppState<S>>,
+    Path((db_id, branch_name, instance_id)): Path<(Id, String, Id)>,
+    Query(params): Query<std::collections::HashMap<String, String>>,
+) -> Result<Json<serde_json::Value>, (StatusCode, Json<ErrorResponse>)> {
+    // Verify branch exists
+    verify_branch_exists(&*store, &db_id, &branch_name).await?;
+
+    // Get branch
+    let branch = match store.get_branch(&db_id, &branch_name).await {
+        Ok(Some(branch)) => branch,
+        Ok(None) => {
+            return Err((
+                StatusCode::NOT_FOUND,
+                Json(ErrorResponse::new("Branch not found")),
+            ))
+        }
+        Err(e) => {
+            return Err((
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(ErrorResponse::new(&e.to_string())),
+            ))
+        }
+    };
+
+    // Get commit data from branch's current commit
+    let commit_hash = branch.current_commit_hash.ok_or((
+        StatusCode::NOT_FOUND,
+        Json(ErrorResponse::new("Branch has no commits yet")),
+    ))?;
+
+    let commit_data = match store.get_commit_data(&commit_hash).await {
+        Ok(Some(data)) => data,
+        Ok(None) => {
+            return Err((
+                StatusCode::NOT_FOUND,
+                Json(ErrorResponse::new("Commit data not found")),
+            ))
+        }
+        Err(e) => {
+            return Err((
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(ErrorResponse::new(&e.to_string())),
+            ))
+        }
+    };
+
+    execute_instance_propagate(
+        db_id,
+        branch_name,
+        Some(commit_hash.clone()),
+        instance_id,
+        commit_data.schema.clone(),
+        commit_data.instances.clone(),
+        params,
+    )
+    .await
+}
+
+/// Propagate bounds for instance - working commit
+pub async fn get_working_commit_instance_propagate<S: WorkingCommitStore + Store + BranchStore>(
+    State(store): State<AppState<S>>,
+    Path((db_id, branch_name, instance_id)): Path<(Id, String, Id)>,
+    Query(params): Query<std::collections::HashMap<String, String>>,
+) -> Result<Json<serde_json::Value>, (StatusCode, Json<ErrorResponse>)> {
+    // Verify branch exists
+    verify_branch_exists(&*store, &db_id, &branch_name).await?;
+
+    // Get the working commit
+    let working_commit = match store
+        .get_active_working_commit_for_branch(&db_id, &branch_name)
+        .await
+    {
+        Ok(Some(commit)) => commit,
+        Ok(None) => {
+            return Err((
+                StatusCode::NOT_FOUND,
+                Json(ErrorResponse::new("No active working commit found")),
+            ))
+        }
+        Err(e) => {
+            return Err((
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(ErrorResponse::new(&e.to_string())),
+            ))
+        }
+    };
+
+    execute_instance_propagate(
+        db_id,
+        branch_name,
+        None,
+        instance_id,
+        working_commit.schema_data.clone(),
+        working_commit.instances_data.clone(),
+        params,
+    )
+    .await
+}
+
+/// Propagate bounds for instance - default branch working commit
+pub async fn get_default_branch_working_commit_instance_propagate<
+    S: WorkingCommitStore + Store + BranchStore,
+>(
+    State(store): State<AppState<S>>,
+    Path((db_id, instance_id)): Path<(Id, Id)>,
+    Query(params): Query<std::collections::HashMap<String, String>>,
+) -> Result<Json<serde_json::Value>, (StatusCode, Json<ErrorResponse>)> {
+    get_working_commit_instance_propagate(
+        State(store),
+        Path((db_id, "main".to_string(), instance_id)),
+        Query(params),
+    )
+    .await
+}
+
 /// Helper function to verify branch exists and belongs to database
 async fn verify_branch_exists<S: BranchStore>(
     store: &S,
@@ -11811,13 +12195,14 @@ pub async fn analyze_database_instance<S: Store + BranchStore + CommitStore>(
     };
 
     // Perform analysis
-    let result = crate::logic::analysis::InstanceAnalyzer::analyze(method, &instance_id, &commit_data)
-        .map_err(|e| {
-            (
-                StatusCode::BAD_REQUEST,
-                Json(ErrorResponse::new(&format!("Analysis failed: {}", e))),
-            )
-        })?;
+    let result =
+        crate::logic::analysis::InstanceAnalyzer::analyze(method, &instance_id, &commit_data)
+            .map_err(|e| {
+                (
+                    StatusCode::BAD_REQUEST,
+                    Json(ErrorResponse::new(&format!("Analysis failed: {}", e))),
+                )
+            })?;
 
     Ok(Json(result))
 }
@@ -11871,13 +12256,14 @@ pub async fn analyze_branch_instance<S: Store + BranchStore + CommitStore>(
     };
 
     // Perform analysis
-    let result = crate::logic::analysis::InstanceAnalyzer::analyze(method, &instance_id, &commit_data)
-        .map_err(|e| {
-            (
-                StatusCode::BAD_REQUEST,
-                Json(ErrorResponse::new(&format!("Analysis failed: {}", e))),
-            )
-        })?;
+    let result =
+        crate::logic::analysis::InstanceAnalyzer::analyze(method, &instance_id, &commit_data)
+            .map_err(|e| {
+                (
+                    StatusCode::BAD_REQUEST,
+                    Json(ErrorResponse::new(&format!("Analysis failed: {}", e))),
+                )
+            })?;
 
     Ok(Json(result))
 }

@@ -7,6 +7,7 @@ use crate::model::{
 use anyhow::Result;
 use pldag::Pldag;
 use std::collections::{HashMap, HashSet, VecDeque};
+use std::hash::{DefaultHasher, Hash, Hasher};
 use std::time::Instant;
 
 /// Error type for solve pipeline failures
@@ -93,7 +94,6 @@ impl<'a> SolvePipeline<'a> {
             id_mappings.get_pldag_id(&target_instance_id).unwrap(),
             &objective_sets,
             &id_mappings,
-            &id_mappings.pldag_to_our,
         )?;
         phase_timings.push(("solve", phase_start.elapsed()));
 
@@ -223,7 +223,6 @@ impl<'a> SolvePipeline<'a> {
             id_mappings.get_pldag_id(&target_instance_id).unwrap(),
             &objective_sets,
             &id_mappings,
-            &id_mappings.pldag_to_our,
         )?;
         phase_timings.push(("solve", phase_start.elapsed()));
 
@@ -288,7 +287,7 @@ impl<'a> SolvePipeline<'a> {
     // Remove fetch_commit_data method as we now have commit data directly
 
     /// Step 2: Resolve all relationships to concrete instance IDs
-    fn resolve_all_relationships(
+    pub fn resolve_all_relationships(
         &self,
         mut instances: Vec<Instance>,
         schema: &Schema,
@@ -440,7 +439,7 @@ impl<'a> SolvePipeline<'a> {
     }
 
     /// Step 4: Setup Pldag model with topological sort
-    fn setup_pldag_model(
+    pub fn setup_pldag_model(
         &self,
         _main_instance_id: &Id,
         instances: &[Instance],
@@ -453,14 +452,13 @@ impl<'a> SolvePipeline<'a> {
         let sorted_instances = self.topological_sort(instances)?;
 
         // Step 4.2: Process instances in topological order
-        let mut composite_ids = HashSet::new();
         for instance in sorted_instances {
             let class_def = schema
                 .get_class_by_id(&instance.class_id)
                 .ok_or_else(|| anyhow::anyhow!("Class {} not found", instance.class_id))?;
 
             // Step 4.3: Determine if instance is primitive or composite
-            if instance.relationships.is_empty() || class_def.relationships.is_empty() {
+            if class_def.relationships.is_empty() {
                 // Primitive instance
                 let domain = if let Some(domain) = &instance.domain {
                     domain.clone()
@@ -478,7 +476,6 @@ impl<'a> SolvePipeline<'a> {
                     class_def,
                     &mut id_mappings,
                 )?;
-                composite_ids.insert(composite_id.clone());
                 id_mappings.register_composite(&instance.id, &composite_id);
             }
         }
@@ -487,7 +484,7 @@ impl<'a> SolvePipeline<'a> {
     }
 
     /// Get all dependencies of an instance (including transitive dependencies)
-    fn get_instance_dependencies(
+    pub fn get_instance_dependencies(
         &self,
         target_id: &Id,
         instances: &[Instance],
@@ -722,19 +719,15 @@ impl<'a> SolvePipeline<'a> {
             if let Some(RelationshipSelection::SimpleIds(target_ids)) =
                 instance.relationships.get(&rel_def.id)
             {
-                if target_ids.is_empty() {
-                    continue;
-                }
-
                 // Map target IDs to Pldag variables
                 let pldag_vars: Vec<&str> = target_ids
                     .iter()
-                    .filter_map(|id| id_mappings.get_pldag_id(id))
+                    .map(|id| {
+                        // If id in id_mappings, get corresponding pldag id
+                        // else return id
+                        id_mappings.get_pldag_id(id).unwrap_or(id)
+                    })
                     .collect();
-
-                if pldag_vars.is_empty() {
-                    continue;
-                }
 
                 // Create constraint based on quantifier
                 let constraint_id = match &rel_def.quantifier {
@@ -758,9 +751,7 @@ impl<'a> SolvePipeline<'a> {
                     }
                     Quantifier::Optional => model.set_atleast(pldag_vars, 0),
                     Quantifier::Any => model.set_or(pldag_vars),
-                    Quantifier::All => {
-                        model.set_and(pldag_vars.into_iter().map(|s| s.to_string()).collect())
-                    }
+                    Quantifier::All => model.set_and(pldag_vars),
                 };
 
                 constraint_ids.push(constraint_id);
@@ -768,44 +759,37 @@ impl<'a> SolvePipeline<'a> {
         }
 
         // Combine all relationship constraints
-        if constraint_ids.is_empty() {
-            // No valid relationships, create a constant true node
-            Ok(model.set_and::<String>(vec![]))
-        } else if constraint_ids.len() == 1 {
-            Ok(constraint_ids[0].clone())
-        } else {
-            match class_def.base.op {
-                class::BaseOp::All => Ok(model.set_and(constraint_ids)),
-                class::BaseOp::Any => Ok(model.set_or(constraint_ids)),
-                class::BaseOp::AtLeast => Ok(model.set_atleast(
-                    constraint_ids.iter().map(|id| id.as_str()).collect(),
-                    class_def.base.val.unwrap_or(0) as i64,
-                )),
-                class::BaseOp::AtMost => Ok(model.set_atmost(
-                    constraint_ids.iter().map(|id| id.as_str()).collect(),
-                    class_def.base.val.unwrap_or(0) as i64,
-                )),
-                class::BaseOp::Exactly => Ok(model.set_equal(
-                    constraint_ids.iter().map(|id| id.as_str()).collect(),
-                    class_def.base.val.unwrap_or(0) as i64,
-                )),
-                class::BaseOp::Imply => {
-                    if constraint_ids.len() != 2 {
-                        Err(anyhow::anyhow!(
-                            "Imply operator requires exactly 2 constraints"
-                        ))
-                    } else {
-                        Ok(model.set_imply(&constraint_ids[0], &constraint_ids[1]))
-                    }
+        match class_def.base.op {
+            class::BaseOp::All => Ok(model.set_and(constraint_ids)),
+            class::BaseOp::Any => Ok(model.set_or(constraint_ids)),
+            class::BaseOp::AtLeast => Ok(model.set_atleast(
+                constraint_ids.iter().map(|id| id.as_str()).collect(),
+                class_def.base.val.unwrap_or(0) as i64,
+            )),
+            class::BaseOp::AtMost => Ok(model.set_atmost(
+                constraint_ids.iter().map(|id| id.as_str()).collect(),
+                class_def.base.val.unwrap_or(0) as i64,
+            )),
+            class::BaseOp::Exactly => Ok(model.set_equal(
+                constraint_ids.iter().map(|id| id.as_str()).collect(),
+                class_def.base.val.unwrap_or(0) as i64,
+            )),
+            class::BaseOp::Imply => {
+                if constraint_ids.len() != 2 {
+                    Err(anyhow::anyhow!(
+                        "Imply operator requires exactly 2 constraints"
+                    ))
+                } else {
+                    Ok(model.set_imply(&constraint_ids[0], &constraint_ids[1]))
                 }
-                class::BaseOp::Equiv => {
-                    if constraint_ids.len() != 2 {
-                        Err(anyhow::anyhow!(
-                            "Equiv operator requires exactly 2 constraints"
-                        ))
-                    } else {
-                        Ok(model.set_equiv(&constraint_ids[0], &constraint_ids[1]))
-                    }
+            }
+            class::BaseOp::Equiv => {
+                if constraint_ids.len() != 2 {
+                    Err(anyhow::anyhow!(
+                        "Equiv operator requires exactly 2 constraints"
+                    ))
+                } else {
+                    Ok(model.set_equiv(&constraint_ids[0], &constraint_ids[1]))
                 }
             }
         }
@@ -880,7 +864,6 @@ impl<'a> SolvePipeline<'a> {
         root: &str,
         objective_sets: &[(String, HashMap<String, f64>)],
         id_mappings: &IdMappings,
-        pldag_to_our: &HashMap<String, String>,
     ) -> Result<Vec<HashMap<String, i64>>, SolveError> {
         // Map all objective sets to Pldag IDs
         let mut pldag_objectives = Vec::new();
@@ -908,7 +891,7 @@ impl<'a> SolvePipeline<'a> {
             if let Some(solution) = solution_opt {
                 let mut our_solution = HashMap::new();
                 for (pldag_id, (value, _)) in solution {
-                    if let Some(our_id) = pldag_to_our.get(&pldag_id) {
+                    if let Some(our_id) = id_mappings.pldag_to_our.get(&pldag_id) {
                         our_solution.insert(our_id.clone(), value);
                     }
                 }

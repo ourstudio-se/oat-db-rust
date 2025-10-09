@@ -37,9 +37,10 @@ pub async fn run_server() -> anyhow::Result<()> {
     // Load environment variables from .env file if it exists
     dotenvy::dotenv().ok();
 
-    // Initialize logging with INFO level only (suppress DEBUG logs)
-    let _ = env_logger::Builder::from_env(env_logger::Env::default().default_filter_or("info"))
-        .try_init();
+    // Initialize logging with INFO level, explicitly suppress sqlx debug logs
+    let _ = env_logger::Builder::from_env(
+        env_logger::Env::default().default_filter_or("info,sqlx=warn")
+    ).try_init();
 
     // Load configuration
     let config = crate::config::AppConfig::load()?;

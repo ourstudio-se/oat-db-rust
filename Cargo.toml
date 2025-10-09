@@ -18,14 +18,15 @@ chrono = { version = "0.4", features = ["serde"] }
 tower = "0.4"
 tower-http = { version = "0.5", features = ["fs"] }
 # PostgreSQL dependencies
-sqlx = { version = "0.7", features = ["runtime-tokio-rustls", "postgres", "chrono", "uuid", "json", "migrate", "macros"] }
+sqlx = { version = "0.7", default-features = false, features = ["runtime-tokio-rustls", "postgres", "chrono", "uuid", "json", "migrate", "macros"] }
 # Configuration management
 config = "0.14"
 # Environment variable support
 dotenvy = "0.15"
 # Logging
+log = "0.4"
 env_logger = "0.10"
-pldag = { version = "3.0.3", features = ["glpk"] }
+pldag = { version = "3.0.5", features = ["glpk"] }
 glpk-rust = "0.1.5"
 # Git-like commit functionality
 sha2 = "0.10"  # SHA-256 hashing for commits

@@ -11,8 +11,14 @@ async fn main() -> anyhow::Result<()> {
     // Load environment variables from .env file if it exists
     dotenvy::dotenv().ok();
 
-    // Initialize logging with INFO level only (suppress DEBUG logs)
-    env_logger::Builder::from_env(env_logger::Env::default().default_filter_or("info")).init();
+    // Initialize logging with explicit filter to suppress sqlx debug logs
+    use env_logger::Builder;
+    use log::LevelFilter;
+
+    Builder::new()
+        .filter_level(LevelFilter::Info)      // Default to Info for everything
+        .filter_module("sqlx", LevelFilter::Warn)  // Suppress sqlx Debug logs
+        .init();
 
     println!("OAT-DB: Combinatorial Database Server");
 

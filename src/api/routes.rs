@@ -98,6 +98,10 @@ pub fn create_router<S: Store + 'static>() -> Router<Arc<S>> {
             "/databases/:db_id/working-commit/instances/:instance_id/query",
             get(handlers::get_default_branch_working_commit_instance_query::<S>),
         )
+        .route(
+            "/databases/:db_id/working-commit/instances/:instance_id/propagate",
+            get(handlers::get_default_branch_working_commit_instance_propagate::<S>),
+        )
         // Database-level READ-ONLY queries (automatically use main branch)
         // For modifications, use working-commit endpoints
         .route(
@@ -191,6 +195,15 @@ pub fn create_router<S: Store + 'static>() -> Router<Arc<S>> {
             "/databases/:db_id/branches/:branch_id/instances/:instance_id/query",
             get(handlers::get_branch_instance_query::<S>),
         )
+        // Propagate endpoints
+        .route(
+            "/databases/:db_id/instances/:instance_id/propagate",
+            get(handlers::get_database_instance_propagate::<S>),
+        )
+        .route(
+            "/databases/:db_id/branches/:branch_id/instances/:instance_id/propagate",
+            get(handlers::get_branch_instance_propagate::<S>),
+        )
         // Batch query endpoints for multiple objectives
         .route(
             "/databases/:db_id/instances/:instance_id/batch-query",
@@ -259,6 +272,10 @@ pub fn create_router<S: Store + 'static>() -> Router<Arc<S>> {
         .route(
             "/databases/:db_id/branches/:branch_id/working-commit/instances/:instance_id/query",
             get(handlers::get_working_commit_instance_query::<S>),
+        )
+        .route(
+            "/databases/:db_id/branches/:branch_id/working-commit/instances/:instance_id/propagate",
+            get(handlers::get_working_commit_instance_propagate::<S>),
         )
         .route(
             "/databases/:db_id/commits/:commit_hash/validate",

@@ -91,8 +91,8 @@ impl SimpleValidator {
         result.instance_count = instances.len();
 
         // Validate each instance
-        for instance in instances {
-            let instance_result = Self::validate_instance(store, &instance, &schema).await;
+        for instance in &instances {
+            let instance_result = Self::validate_instance(store, instance, &schema).await;
             result.validated_instances.push(instance.id.clone());
 
             match instance_result {
@@ -106,7 +106,7 @@ impl SimpleValidator {
                 Err(e) => {
                     result.valid = false;
                     result.errors.push(ValidationError {
-                        instance_id: instance.id,
+                        instance_id: instance.id.clone(),
                         error_type: ValidationErrorType::InvalidValue,
                         message: format!("Validation failed: {}", e),
                         property_name: None,
@@ -114,6 +114,18 @@ impl SimpleValidator {
                         actual: None,
                     });
                 }
+            }
+        }
+
+        // Additional validation: Check that all relationships resolve to at least one instance
+        for instance in &instances {
+            if let Some(class_def) = schema.get_class_by_id(&instance.class_id) {
+                Self::validate_relationship_resolution(
+                    instance,
+                    class_def,
+                    &instances,
+                    &mut result,
+                );
             }
         }
 
@@ -302,10 +314,10 @@ impl SimpleValidator {
     }
 
     async fn validate_instance_relationships<S: Store>(
-        _store: &S,
+        store: &S,
         instance: &Instance,
         class_def: &ClassDef,
-        _schema: &Schema,
+        schema: &Schema,
         result: &mut ValidationResult,
     ) {
         // Build maps for both relationship names and IDs for flexible lookup
@@ -343,7 +355,7 @@ impl SimpleValidator {
         // Validate that relationship target class IDs exist in schema
         for rel_def in &class_def.relationships {
             for target_class_id in &rel_def.targets {
-                if _schema.get_class_by_id(target_class_id).is_none() {
+                if schema.get_class_by_id(target_class_id).is_none() {
                     result.valid = false;
                     result.errors.push(ValidationError {
                         instance_id: instance.id.clone(),
@@ -360,74 +372,115 @@ impl SimpleValidator {
             }
         }
 
-        // Validate relationship targets exist and have correct types
+        // Note: Relationship resolution validation is now handled by validate_relationship_resolution()
+        // which is called separately with access to all instances. This allows proper pool resolution
+        // and filter evaluation. The old warnings about "complex validation not yet implemented" have
+        // been removed since we now have full relationship resolution validation.
+    }
+
+    /// Validate that all relationships resolve to at least one instance
+    /// This is called separately after all instances are validated
+    pub fn validate_relationship_resolution(
+        instance: &Instance,
+        class_def: &ClassDef,
+        all_instances: &[Instance],
+        result: &mut ValidationResult,
+    ) {
+        use crate::logic::pool_resolution::{PoolResolver, SelectionResult};
+
+        // Build relationship definition lookup
+        let schema_rels_by_name: HashMap<String, &crate::model::RelationshipDef> = class_def
+            .relationships
+            .iter()
+            .map(|r| (r.name.clone(), r))
+            .collect();
+        let schema_rels_by_id: HashMap<String, &crate::model::RelationshipDef> = class_def
+            .relationships
+            .iter()
+            .map(|r| (r.id.clone(), r))
+            .collect();
+
+        // Check each relationship in the instance
         for (rel_key, relationship_selection) in &instance.relationships {
-            // Try to get relationship definition by both name and ID
+            // Get the relationship definition
             let rel_def = schema_rels_by_name
                 .get(rel_key)
                 .or_else(|| schema_rels_by_id.get(rel_key));
 
-            if let Some(_rel_def) = rel_def {
-                // Validating relationship
+            if let Some(rel_def) = rel_def {
+                // Try to resolve the relationship to see if it produces any instances
+                match PoolResolver::resolve_relationship(
+                    all_instances,
+                    rel_def,
+                    relationship_selection,
+                ) {
+                    Ok(selection_result) => {
+                        // Check if the resolved relationship is empty
+                        let is_empty = match &selection_result {
+                            SelectionResult::Resolved(ids) => ids.is_empty(),
+                            SelectionResult::Unresolved(pool) => {
+                                // Unresolved with an empty pool is a problem
+                                pool.is_empty()
+                            }
+                        };
 
-                // Extract the target IDs based on the RelationshipSelection type
-                let target_ids = match relationship_selection {
-                    crate::model::RelationshipSelection::SimpleIds(ids) => ids.clone(),
-                    crate::model::RelationshipSelection::Ids { ids } => ids.clone(),
-                    crate::model::RelationshipSelection::PoolBased { pool: _, selection } => {
-                        // For pool-based relationships, extract IDs from selection if available
-                        match selection {
-                            Some(crate::model::SelectionSpec::Ids(ids)) => ids.clone(),
-                            _ => {
+                        if is_empty {
+                            // Check if the relationship has a minimum quantifier > 0
+                            let min_required = match &rel_def.quantifier {
+                                crate::model::Quantifier::Range(lower, _) => *lower,
+                                crate::model::Quantifier::Exactly(n) => *n,
+                                crate::model::Quantifier::AtLeast(n) => *n,
+                                crate::model::Quantifier::One => 1,
+                                crate::model::Quantifier::Optional => 0,
+                                crate::model::Quantifier::AtMost(_) => 0,
+                                crate::model::Quantifier::Any => 0,
+                                crate::model::Quantifier::All => 0,
+                            };
+
+                            if min_required > 0 {
+                                // This is an error - relationship requires instances but resolves to none
+                                result.valid = false;
+                                result.errors.push(ValidationError {
+                                    instance_id: instance.id.clone(),
+                                    error_type: ValidationErrorType::RelationshipError,
+                                    message: format!(
+                                        "Relationship '{}' resolves to an empty set but requires at least {} instance(s). Check your relationship filters and available instances.",
+                                        rel_key, min_required
+                                    ),
+                                    property_name: Some(rel_key.clone()),
+                                    expected: Some(format!("At least {} instance(s)", min_required)),
+                                    actual: Some("0 instances".to_string()),
+                                });
+                            } else {
+                                // Just a warning if not required
                                 result.warnings.push(ValidationWarning {
                                     instance_id: instance.id.clone(),
                                     warning_type: ValidationWarningType::RelationshipNotValidated,
                                     message: format!(
-                                        "Relationship '{}' uses pool-based selection - complex validation not yet implemented",
+                                        "Relationship '{}' resolves to an empty set. This may be intentional if the relationship is optional.",
                                         rel_key
                                     ),
                                     property_name: Some(rel_key.clone()),
                                 });
-                                continue;
                             }
                         }
                     }
-                    crate::model::RelationshipSelection::Filter { .. } => {
-                        // For filters, we'd need to execute the filter to get the IDs
-                        // For now, add a warning that filter validation isn't implemented
-                        result.warnings.push(ValidationWarning {
+                    Err(e) => {
+                        // Failed to resolve - add error
+                        result.valid = false;
+                        result.errors.push(ValidationError {
                             instance_id: instance.id.clone(),
-                            warning_type: ValidationWarningType::RelationshipNotValidated,
+                            error_type: ValidationErrorType::RelationshipError,
                             message: format!(
-                                "Relationship '{}' uses filter selection - filter validation not yet implemented",
-                                rel_key
+                                "Failed to resolve relationship '{}': {}",
+                                rel_key, e
                             ),
                             property_name: Some(rel_key.clone()),
+                            expected: None,
+                            actual: None,
                         });
-                        continue;
                     }
-                    crate::model::RelationshipSelection::All => {
-                        // For "All", we'd need to find all instances of the target type
-                        // For now, add a warning that "All" validation isn't implemented
-                        result.warnings.push(ValidationWarning {
-                            instance_id: instance.id.clone(),
-                            warning_type: ValidationWarningType::RelationshipNotValidated,
-                            message: format!(
-                                "Relationship '{}' uses 'All' selection - validation not yet implemented",
-                                rel_key
-                            ),
-                            property_name: Some(rel_key.clone()),
-                        });
-                        continue;
-                    }
-                };
-
-                // TODO: Validation logic needs branch_id parameter for new architecture
-                // For now, this validation is disabled until the validation system is updated
-                if !target_ids.is_empty() {
-                    // Would check if instances exist in current branch
                 }
-                // REMOVED EARLY RETURN - was preventing relationship validation from completing
             }
         }
     }
