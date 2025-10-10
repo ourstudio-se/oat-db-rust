@@ -12456,14 +12456,18 @@ async fn execute_instance_query(
     use crate::logic::SolvePipeline;
     use crate::model::{CommitData, ResolutionContext, ResolutionPolicies};
 
-    // Convert URL parameters to objectives map and extract derived properties
+    // Convert URL parameters to objectives map and extract derived properties and class filters
     let mut objective = HashMap::new();
     let mut derived_properties: Option<Vec<String>> = None;
+    let mut class_filter: Option<Vec<String>> = None;
 
     for (key, value) in params {
         if key == "derived_properties" {
             // Handle comma-separated list of derived properties
             derived_properties = Some(value.split(',').map(|s| s.trim().to_string()).collect());
+        } else if key == "class" {
+            // Handle comma-separated list of class filters
+            class_filter = Some(value.split(',').map(|s| s.trim().to_string()).collect());
         } else if let Ok(weight) = value.parse::<f64>() {
             objective.insert(key, weight);
         }
@@ -12532,7 +12536,21 @@ async fn execute_instance_query(
             )
         })?;
 
-    Ok(Json(artifact))
+    // Apply class filter if specified
+    let filtered_artifact = if let Some(class_filters) = class_filter {
+        let mut filtered = artifact.clone();
+
+        // Filter the configuration instances by class
+        filtered.configuration.retain(|instance| {
+            class_filters.contains(&instance.class_id)
+        });
+
+        filtered
+    } else {
+        artifact
+    };
+
+    Ok(Json(filtered_artifact))
 }
 
 /// Execute propagate on instance - returns propagated bounds
