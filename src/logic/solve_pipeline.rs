@@ -29,6 +29,18 @@ impl SolveError {
     }
 }
 
+/// Helper function to determine the type string for a JSON value
+fn get_json_value_type(value: &serde_json::Value) -> &'static str {
+    match value {
+        serde_json::Value::String(_) => "string",
+        serde_json::Value::Number(_) => "number",
+        serde_json::Value::Bool(_) => "boolean",
+        serde_json::Value::Null => "null",
+        serde_json::Value::Array(_) => "array",
+        serde_json::Value::Object(_) => "object",
+    }
+}
+
 /// The solve pipeline orchestrates the complete solution process
 /// From CommitData + target instance → ConfigurationArtifact with ILP-ready data
 pub struct SolvePipeline<'a> {
@@ -42,6 +54,8 @@ impl<'a> SolvePipeline<'a> {
     }
 
     /// Execute the solve pipeline with multiple objective sets and derived properties
+    ///
+    /// This is a convenience wrapper around solve_instance_with_constraints that doesn't add custom constraints
     pub fn solve_instance_with_multiple_objectives_and_derived_properties(
         &self,
         request: NewConfigurationArtifact,
@@ -49,112 +63,14 @@ impl<'a> SolvePipeline<'a> {
         objective_sets: Vec<(String, HashMap<String, f64>)>,
         derived_properties: Option<Vec<String>>,
     ) -> Result<Vec<(String, ConfigurationArtifact)>, SolveError> {
-        let start_time = Instant::now();
-        let mut phase_timings = Vec::new();
-
-        // Step 1: Get instances and schema from commit data
-        let phase_start = Instant::now();
-        let all_instances = self.commit_data.instances.clone();
-        let schema = &self.commit_data.schema;
-
-        // Find target instance (just validate it exists)
-        let _target_instance = all_instances
-            .iter()
-            .find(|i| i.id == target_instance_id)
-            .ok_or_else(|| {
-                anyhow::anyhow!("Target instance {} not found in commit", target_instance_id)
-            })?
-            .clone();
-        phase_timings.push(("fetch_data", phase_start.elapsed()));
-
-        // Step 2: Build dependency tree and filter instances early
-        let phase_start = Instant::now();
-        let dependencies = self.get_instance_dependencies(&target_instance_id, &all_instances)?;
-        let instances: Vec<Instance> = all_instances
-            .into_iter()
-            .filter(|inst| dependencies.contains(&inst.id))
-            .collect();
-        phase_timings.push(("filter_dependencies", phase_start.elapsed()));
-
-        // Step 3: Resolve all pool filters and materialize relationships for filtered instances
-        let phase_start = Instant::now();
-        let resolved_instances = self.resolve_all_relationships(instances, schema)?;
-        phase_timings.push(("resolve_relationships", phase_start.elapsed()));
-
-        // Step 4: Setup Pldag model (no longer needs to filter)
-        let phase_start = Instant::now();
-        let (model, id_mappings) =
-            self.setup_pldag_model(&target_instance_id, &resolved_instances, schema)?;
-        phase_timings.push(("setup_pldag", phase_start.elapsed()));
-
-        // Step 5: Map all objectives and solve with Pldag (EFFICIENTLY)
-        let phase_start = Instant::now();
-        let solutions = self.solve_with_pldag_batch(
-            model,
-            id_mappings.get_pldag_id(&target_instance_id).unwrap(),
-            &objective_sets,
-            &id_mappings,
-        )?;
-        phase_timings.push(("solve", phase_start.elapsed()));
-
-        // Step 5.5: Evaluate derived properties for all instances
-        let instance_class = schema
-            .classes
-            .iter()
-            .find(|c| c.id == _target_instance.class_id)
-            .unwrap();
-
-        // Step 6: Compile solutions into artifacts
-        let mut results = Vec::new();
-        let elapsed = start_time.elapsed();
-        // Use microseconds for precision, then convert to milliseconds
-        // Ensure at least 1ms is reported even for very fast operations
-        let total_time = std::cmp::max(1, elapsed.as_micros() / 1000) as u64;
-
-        for ((objective_id, _), solution) in objective_sets.iter().zip(solutions.iter()) {
-            let mut artifact = self.compile_artifact(
-                request.clone(),
-                target_instance_id.clone(),
-                resolved_instances.clone(),
-                solution.clone(),
-                &id_mappings,
-                total_time,
-                &phase_timings,
-            )?;
-
-            // Only calculate derived properties if requested
-            if let Some(requested_props) = &derived_properties {
-                if !requested_props.is_empty() {
-                    for derived_property in instance_class.derived.iter() {
-                        // Only calculate if this property was requested
-                        if requested_props.contains(&derived_property.name) {
-                            match &derived_property.fn_short {
-                                Some(short) => {
-                                    let derived_value = self.resolved_derived_property(
-                                        &_target_instance,
-                                        &resolved_instances,
-                                        solution,
-                                        &short,
-                                    );
-                                    if let Some(value) = derived_value {
-                                        let mut property_map = HashMap::new();
-                                        property_map.insert("value".to_string(), value.clone());
-                                        artifact
-                                            .derived_properties
-                                            .insert(derived_property.name.clone(), property_map);
-                                    }
-                                }
-                                None => continue,
-                            }
-                        }
-                    }
-                }
-            }
-
-            results.push((objective_id.clone(), artifact));
-        }
-
-        Ok(results)
+        // Delegate to solve_instance_with_constraints with a no-op constraint function
+        self.solve_instance_with_constraints(
+            request,
+            target_instance_id,
+            objective_sets,
+            derived_properties,
+            |_model, _mappings| Ok(()),
+        )
     }
 
     /// Execute the solve pipeline with multiple objective sets, derived properties, and custom constraints
@@ -266,6 +182,11 @@ impl<'a> SolvePipeline<'a> {
                                     if let Some(value) = derived_value {
                                         let mut property_map = HashMap::new();
                                         property_map.insert("value".to_string(), value.clone());
+
+                                        // Determine and add type based on the JSON value type
+                                        let type_str = get_json_value_type(&value);
+                                        property_map.insert("type".to_string(), serde_json::Value::String(type_str.to_string()));
+
                                         artifact
                                             .derived_properties
                                             .insert(derived_property.name.clone(), property_map);
