@@ -8392,7 +8392,6 @@ async fn batch_query_instance_configuration_impl<S: Store>(
     request: BatchInstanceQueryRequest,
     params: std::collections::HashMap<String, String>,
 ) -> Result<Json<BatchQueryResponse>, (StatusCode, Json<ErrorResponse>)> {
-    use crate::logic::SolvePipelineWithStore;
     use crate::model::{NewConfigurationArtifact, ResolutionContext};
     use std::time::Instant;
 
