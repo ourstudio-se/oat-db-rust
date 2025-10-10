@@ -139,6 +139,18 @@ impl<'a> SolvePipeline<'a> {
                                     if let Some(value) = derived_value {
                                         let mut property_map = HashMap::new();
                                         property_map.insert("value".to_string(), value.clone());
+
+                                        // Determine and add type based on the JSON value type
+                                        let type_str = match &value {
+                                            serde_json::Value::String(_) => "string",
+                                            serde_json::Value::Number(_) => "number",
+                                            serde_json::Value::Bool(_) => "boolean",
+                                            serde_json::Value::Null => "null",
+                                            serde_json::Value::Array(_) => "array",
+                                            serde_json::Value::Object(_) => "object",
+                                        };
+                                        property_map.insert("type".to_string(), serde_json::Value::String(type_str.to_string()));
+
                                         artifact
                                             .derived_properties
                                             .insert(derived_property.name.clone(), property_map);
@@ -266,6 +278,18 @@ impl<'a> SolvePipeline<'a> {
                                     if let Some(value) = derived_value {
                                         let mut property_map = HashMap::new();
                                         property_map.insert("value".to_string(), value.clone());
+
+                                        // Determine and add type based on the JSON value type
+                                        let type_str = match &value {
+                                            serde_json::Value::String(_) => "string",
+                                            serde_json::Value::Number(_) => "number",
+                                            serde_json::Value::Bool(_) => "boolean",
+                                            serde_json::Value::Null => "null",
+                                            serde_json::Value::Array(_) => "array",
+                                            serde_json::Value::Object(_) => "object",
+                                        };
+                                        property_map.insert("type".to_string(), serde_json::Value::String(type_str.to_string()));
+
                                         artifact
                                             .derived_properties
                                             .insert(derived_property.name.clone(), property_map);
