@@ -311,6 +311,15 @@ pub fn create_router<S: Store + 'static>() -> Router<Arc<S>> {
             "/databases/:db_id/branches/:branch_id/working-commit/instances/:instance_id",
             delete(handlers::delete_working_commit_instance::<S>),
         )
+        // Bulk update endpoints for working commits
+        .route(
+            "/databases/:db_id/branches/:branch_id/working-commit/schema/classes/bulk",
+            patch(handlers::bulk_update_working_commit_classes::<S>),
+        )
+        .route(
+            "/databases/:db_id/branches/:branch_id/working-commit/instances/bulk",
+            patch(handlers::bulk_update_working_commit_instances::<S>),
+        )
         // Batch query endpoints for working commits
         .route(
             "/databases/:db_id/branches/:branch_id/working-commit/instances/:instance_id/batch-query",

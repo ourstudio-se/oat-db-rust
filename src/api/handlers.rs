@@ -3589,6 +3589,390 @@ pub async fn get_openapi_spec<S: Store>(_state: State<AppState<S>>) -> Json<serd
                     }
                 }
             },
+            "/databases/{db_id}/branches/{branch_id}/working-commit/schema/classes/bulk": {
+                "patch": {
+                    "tags": ["Working Commits"],
+                    "summary": "Bulk update/create classes in working commit",
+                    "description": "Updates or creates multiple classes in the working commit in a single atomic operation. Each class in the array will be updated if it exists, or created if it doesn't exist. This is more efficient than multiple single-class PATCH requests. All changes are staged in the working commit until explicitly committed.",
+                    "parameters": [
+                        {
+                            "name": "db_id",
+                            "in": "path",
+                            "required": true,
+                            "description": "Database ID",
+                            "schema": {
+                                "type": "string"
+                            }
+                        },
+                        {
+                            "name": "branch_id",
+                            "in": "path",
+                            "required": true,
+                            "description": "Branch ID/Name (e.g., 'main')",
+                            "schema": {
+                                "type": "string"
+                            }
+                        }
+                    ],
+                    "requestBody": {
+                        "required": true,
+                        "description": "Array of class definitions to create or update",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "type": "array",
+                                    "items": {
+                                        "type": "object",
+                                        "properties": {
+                                            "id": {
+                                                "type": "string",
+                                                "description": "Unique class identifier (required)",
+                                                "example": "class-furniture"
+                                            },
+                                            "name": {
+                                                "type": "string",
+                                                "description": "Human-readable class name (optional for updates, defaults to id for new classes)",
+                                                "example": "Furniture"
+                                            },
+                                            "description": {
+                                                "type": "string",
+                                                "description": "Optional class description",
+                                                "example": "Base furniture class"
+                                            },
+                                            "properties": {
+                                                "type": "array",
+                                                "description": "Property definitions for this class",
+                                                "items": {
+                                                    "type": "object"
+                                                }
+                                            },
+                                            "relationships": {
+                                                "type": "array",
+                                                "description": "Relationship definitions for this class",
+                                                "items": {
+                                                    "type": "object"
+                                                }
+                                            },
+                                            "derived": {
+                                                "type": "array",
+                                                "description": "Derived property definitions",
+                                                "items": {
+                                                    "type": "object"
+                                                }
+                                            },
+                                            "domain_constraint": {
+                                                "type": "object",
+                                                "description": "Domain constraints for instances of this class",
+                                                "properties": {
+                                                    "lower": {"type": "integer"},
+                                                    "upper": {"type": "integer"}
+                                                }
+                                            },
+                                            "base": {
+                                                "type": "object",
+                                                "description": "Base constraint configuration"
+                                            }
+                                        },
+                                        "required": ["id"]
+                                    },
+                                    "example": [
+                                        {
+                                            "id": "class-furniture",
+                                            "name": "Furniture",
+                                            "description": "Base furniture class",
+                                            "properties": [],
+                                            "relationships": []
+                                        },
+                                        {
+                                            "id": "class-table",
+                                            "name": "Table",
+                                            "properties": [],
+                                            "relationships": []
+                                        }
+                                    ]
+                                }
+                            }
+                        }
+                    },
+                    "responses": {
+                        "200": {
+                            "description": "Bulk operation results with successfully updated classes and any errors",
+                            "content": {
+                                "application/json": {
+                                    "schema": {
+                                        "type": "object",
+                                        "properties": {
+                                            "updated": {
+                                                "type": "array",
+                                                "description": "Classes that were successfully created or updated",
+                                                "items": {
+                                                    "$ref": "#/components/schemas/ClassDef"
+                                                }
+                                            },
+                                            "errors": {
+                                                "type": "array",
+                                                "description": "Classes that failed to update with error messages",
+                                                "items": {
+                                                    "type": "object",
+                                                    "properties": {
+                                                        "id": {
+                                                            "type": "string",
+                                                            "description": "Class ID that failed"
+                                                        },
+                                                        "error": {
+                                                            "type": "string",
+                                                            "description": "Error message explaining the failure"
+                                                        }
+                                                    }
+                                                }
+                                            }
+                                        }
+                                    },
+                                    "example": {
+                                        "updated": [
+                                            {
+                                                "id": "class-furniture",
+                                                "name": "Furniture",
+                                                "description": "Base furniture class",
+                                                "properties": [],
+                                                "relationships": [],
+                                                "derived": [],
+                                                "domain_constraint": {"lower": 0, "upper": 1},
+                                                "base": {"op": "all", "val": null},
+                                                "created_by": "api-user",
+                                                "created_at": "2025-10-09T10:00:00Z",
+                                                "updated_by": "api-user",
+                                                "updated_at": "2025-10-09T10:00:00Z"
+                                            }
+                                        ],
+                                        "errors": []
+                                    }
+                                }
+                            }
+                        },
+                        "404": {
+                            "description": "Database or branch not found"
+                        },
+                        "500": {
+                            "description": "Internal server error"
+                        }
+                    }
+                }
+            },
+            "/databases/{db_id}/branches/{branch_id}/working-commit/instances/bulk": {
+                "patch": {
+                    "tags": ["Working Commits"],
+                    "summary": "Bulk update/create instances in working commit",
+                    "description": "Updates or creates multiple instances in the working commit in a single atomic operation. Each instance in the array will be updated if it exists, or created if it doesn't exist. This is significantly more efficient than multiple single-instance PATCH requests, especially for large datasets. Supports partial updates for existing instances (only specified fields are updated). All changes are staged in the working commit until explicitly committed.",
+                    "parameters": [
+                        {
+                            "name": "db_id",
+                            "in": "path",
+                            "required": true,
+                            "description": "Database ID",
+                            "schema": {
+                                "type": "string"
+                            }
+                        },
+                        {
+                            "name": "branch_id",
+                            "in": "path",
+                            "required": true,
+                            "description": "Branch ID/Name (e.g., 'main')",
+                            "schema": {
+                                "type": "string"
+                            }
+                        }
+                    ],
+                    "requestBody": {
+                        "required": true,
+                        "description": "Array of instance definitions to create or update. For new instances, 'class' field is required. For updates, only include fields you want to modify.",
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "type": "array",
+                                    "items": {
+                                        "type": "object",
+                                        "properties": {
+                                            "id": {
+                                                "type": "string",
+                                                "description": "Unique instance identifier (required)",
+                                                "example": "instance-001"
+                                            },
+                                            "class": {
+                                                "type": "string",
+                                                "description": "Class ID this instance belongs to (required for new instances, optional for updates)",
+                                                "example": "class-bed-base"
+                                            },
+                                            "properties": {
+                                                "type": "object",
+                                                "description": "Instance properties as typed values. For updates, merges with existing properties.",
+                                                "additionalProperties": {
+                                                    "type": "object",
+                                                    "properties": {
+                                                        "value": {
+                                                            "description": "Property value (string, number, boolean, or null)"
+                                                        },
+                                                        "type": {
+                                                            "type": "string",
+                                                            "enum": ["string", "number", "boolean"],
+                                                            "description": "Value type"
+                                                        }
+                                                    }
+                                                },
+                                                "example": {
+                                                    "name": {"value": "Delux Bed", "type": "string"},
+                                                    "price": {"value": 1299.99, "type": "number"}
+                                                }
+                                            },
+                                            "relationships": {
+                                                "type": "object",
+                                                "description": "Instance relationships. For updates, merges with existing relationships.",
+                                                "additionalProperties": {
+                                                    "oneOf": [
+                                                        {
+                                                            "type": "array",
+                                                            "items": {"type": "string"}
+                                                        },
+                                                        {
+                                                            "type": "object"
+                                                        }
+                                                    ]
+                                                },
+                                                "example": {
+                                                    "fabrics": ["fabric-001", "fabric-002"]
+                                                }
+                                            },
+                                            "domain": {
+                                                "type": "object",
+                                                "description": "Domain constraints for this instance",
+                                                "properties": {
+                                                    "lower": {
+                                                        "type": "integer",
+                                                        "description": "Minimum quantity",
+                                                        "example": 0
+                                                    },
+                                                    "upper": {
+                                                        "type": "integer",
+                                                        "description": "Maximum quantity",
+                                                        "example": 1
+                                                    }
+                                                }
+                                            }
+                                        },
+                                        "required": ["id"]
+                                    },
+                                    "example": [
+                                        {
+                                            "id": "bed-001",
+                                            "class": "class-bed-base",
+                                            "properties": {
+                                                "name": {"value": "Delux Bed", "type": "string"},
+                                                "price": {"value": 1299.99, "type": "number"}
+                                            },
+                                            "relationships": {
+                                                "fabrics": ["fabric-001", "fabric-002"]
+                                            },
+                                            "domain": {"lower": 1, "upper": 1}
+                                        },
+                                        {
+                                            "id": "bed-002",
+                                            "class": "class-bed-base",
+                                            "properties": {
+                                                "name": {"value": "Premium Bed", "type": "string"},
+                                                "price": {"value": 1899.99, "type": "number"}
+                                            }
+                                        }
+                                    ]
+                                }
+                            }
+                        }
+                    },
+                    "responses": {
+                        "200": {
+                            "description": "Bulk operation results with successfully updated instances and any errors. Partial success is possible - some instances may succeed while others fail.",
+                            "content": {
+                                "application/json": {
+                                    "schema": {
+                                        "type": "object",
+                                        "properties": {
+                                            "updated": {
+                                                "type": "array",
+                                                "description": "Instances that were successfully created or updated",
+                                                "items": {
+                                                    "$ref": "#/components/schemas/Instance"
+                                                }
+                                            },
+                                            "errors": {
+                                                "type": "array",
+                                                "description": "Instances that failed to update with error messages",
+                                                "items": {
+                                                    "type": "object",
+                                                    "properties": {
+                                                        "id": {
+                                                            "type": "string",
+                                                            "description": "Instance ID that failed"
+                                                        },
+                                                        "error": {
+                                                            "type": "string",
+                                                            "description": "Error message explaining the failure"
+                                                        }
+                                                    },
+                                                    "required": ["id", "error"]
+                                                }
+                                            }
+                                        },
+                                        "required": ["updated", "errors"]
+                                    },
+                                    "example": {
+                                        "updated": [
+                                            {
+                                                "id": "bed-001",
+                                                "class": "class-bed-base",
+                                                "domain": {"lower": 1, "upper": 1},
+                                                "properties": {
+                                                    "name": {"value": "Delux Bed", "type": "string"},
+                                                    "price": {"value": 1299.99, "type": "number"}
+                                                },
+                                                "relationships": {
+                                                    "fabrics": ["fabric-001", "fabric-002"]
+                                                },
+                                                "created_by": "api-user",
+                                                "created_at": "2025-10-09T10:00:00Z",
+                                                "updated_by": "api-user",
+                                                "updated_at": "2025-10-09T10:00:00Z"
+                                            },
+                                            {
+                                                "id": "bed-002",
+                                                "class": "class-bed-base",
+                                                "properties": {
+                                                    "name": {"value": "Premium Bed", "type": "string"},
+                                                    "price": {"value": 1899.99, "type": "number"}
+                                                },
+                                                "relationships": {},
+                                                "created_by": "api-user",
+                                                "created_at": "2025-10-09T10:00:01Z",
+                                                "updated_by": "api-user",
+                                                "updated_at": "2025-10-09T10:00:01Z"
+                                            }
+                                        ],
+                                        "errors": []
+                                    }
+                                }
+                            }
+                        },
+                        "400": {
+                            "description": "Bad request - invalid JSON or malformed data"
+                        },
+                        "404": {
+                            "description": "Database or branch not found"
+                        },
+                        "500": {
+                            "description": "Internal server error"
+                        }
+                    }
+                }
+            },
             "/databases/{db_id}/working-commit": {
                 "get": {
                     "tags": ["Working Commit Operations"],
@@ -10815,6 +11199,393 @@ pub async fn update_working_commit_instance<S: WorkingCommitStore + Store + Bran
 
         Ok(Json(new_instance))
     }
+}
+
+/// Bulk update/create classes in the working commit
+/// Request body should be an array of class definitions with IDs
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct BulkClassUpdate {
+    pub id: Id,
+    #[serde(flatten)]
+    pub update: ClassDefUpdate,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct BulkClassResponse {
+    pub updated: Vec<ClassDef>,
+    pub errors: Vec<BulkOperationError>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct BulkOperationError {
+    pub id: Id,
+    pub error: String,
+}
+
+pub async fn bulk_update_working_commit_classes<S: WorkingCommitStore + Store + BranchStore>(
+    State(store): State<AppState<S>>,
+    Path((db_id, branch_name)): Path<(Id, String)>,
+    RequestJson(classes): RequestJson<Vec<BulkClassUpdate>>,
+) -> Result<Json<BulkClassResponse>, (StatusCode, Json<ErrorResponse>)> {
+    // Verify branch belongs to database
+    match store.get_branch(&db_id, &branch_name).await {
+        Ok(Some(version)) => {
+            if version.database_id != db_id {
+                return Err((
+                    StatusCode::NOT_FOUND,
+                    Json(ErrorResponse::new("Branch not found in this database")),
+                ));
+            }
+        }
+        Ok(None) => {
+            return Err((
+                StatusCode::NOT_FOUND,
+                Json(ErrorResponse::new("Branch not found")),
+            ))
+        }
+        Err(e) => {
+            return Err((
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(ErrorResponse::new(&e.to_string())),
+            ))
+        }
+    }
+
+    // Get or create the working commit
+    let mut working_commit = get_or_create_working_commit(&*store, &db_id, &branch_name)
+        .await
+        .map_err(|e| {
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(ErrorResponse::new(&e.to_string())),
+            )
+        })?;
+
+    let mut updated_classes = Vec::new();
+    let mut errors = Vec::new();
+
+    for class_update in classes {
+        let class_id = class_update.id.clone();
+
+        // Find and update the class, or create it if it doesn't exist
+        if let Some(class) = working_commit
+            .schema_data
+            .classes
+            .iter_mut()
+            .find(|c| c.id == class_id)
+        {
+            // Class exists - apply updates
+            if let Some(name) = class_update.update.name {
+                class.name = name;
+            }
+            if let Some(description) = class_update.update.description {
+                class.description = Some(description);
+            }
+            if let Some(properties) = class_update.update.properties {
+                class.properties = properties;
+            }
+            if let Some(relationships) = class_update.update.relationships {
+                class.relationships = relationships;
+            }
+            if let Some(derived) = class_update.update.derived {
+                class.derived = derived;
+            }
+            if let Some(domain_constraint) = class_update.update.domain_constraint {
+                class.domain_constraint = domain_constraint;
+            }
+            if let Some(base) = class_update.update.base {
+                class.base = base;
+            }
+
+            class.updated_at = chrono::Utc::now();
+            updated_classes.push(class.clone());
+        } else {
+            // Class doesn't exist - create it
+            let now = chrono::Utc::now();
+            let new_class = ClassDef {
+                id: class_id.clone(),
+                name: class_update.update.name.unwrap_or_else(|| class_id.clone()),
+                properties: class_update.update.properties.unwrap_or_default(),
+                relationships: class_update.update.relationships.unwrap_or_default(),
+                derived: class_update.update.derived.unwrap_or_default(),
+                domain_constraint: class_update.update.domain_constraint.unwrap_or_else(Domain::binary),
+                description: class_update.update.description,
+                base: class_update.update.base.unwrap_or_default(),
+                created_by: "api-user".to_string(),
+                updated_by: "api-user".to_string(),
+                created_at: now,
+                updated_at: now,
+            };
+
+            working_commit.schema_data.classes.push(new_class.clone());
+            updated_classes.push(new_class);
+        }
+    }
+
+    // Save the working commit
+    if let Err(e) = store.update_working_commit(working_commit).await {
+        return Err((
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(ErrorResponse::new(&format!(
+                "Failed to update working commit: {}",
+                e
+            ))),
+        ));
+    }
+
+    Ok(Json(BulkClassResponse {
+        updated: updated_classes,
+        errors,
+    }))
+}
+
+/// Bulk update/create instances in the working commit
+/// Request body should be an array of instance updates with IDs
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct BulkInstanceUpdate {
+    pub id: Id,
+    #[serde(flatten)]
+    pub update: serde_json::Value,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct BulkInstanceResponse {
+    pub updated: Vec<Instance>,
+    pub errors: Vec<BulkOperationError>,
+}
+
+pub async fn bulk_update_working_commit_instances<S: WorkingCommitStore + Store + BranchStore>(
+    State(store): State<AppState<S>>,
+    Path((db_id, branch_name)): Path<(Id, String)>,
+    RequestJson(instances): RequestJson<Vec<BulkInstanceUpdate>>,
+) -> Result<Json<BulkInstanceResponse>, (StatusCode, Json<ErrorResponse>)> {
+    // Verify branch belongs to database
+    match store.get_branch(&db_id, &branch_name).await {
+        Ok(Some(version)) => {
+            if version.database_id != db_id {
+                return Err((
+                    StatusCode::NOT_FOUND,
+                    Json(ErrorResponse::new("Branch not found in this database")),
+                ));
+            }
+        }
+        Ok(None) => {
+            return Err((
+                StatusCode::NOT_FOUND,
+                Json(ErrorResponse::new("Branch not found")),
+            ))
+        }
+        Err(e) => {
+            return Err((
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(ErrorResponse::new(&e.to_string())),
+            ))
+        }
+    }
+
+    // Get or create the working commit
+    let mut working_commit = get_or_create_working_commit(&*store, &db_id, &branch_name)
+        .await
+        .map_err(|e| {
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(ErrorResponse::new(&e.to_string())),
+            )
+        })?;
+
+    let mut updated_instances = Vec::new();
+    let mut errors = Vec::new();
+
+    for instance_update in instances {
+        let instance_id = instance_update.id.clone();
+
+        // Find and update the instance, or create it if it doesn't exist
+        let instance_found = working_commit
+            .instances_data
+            .iter_mut()
+            .find(|i| i.id == instance_id)
+            .is_some();
+
+        if instance_found {
+            // Instance exists - update it
+            if let Some(instance) = working_commit
+                .instances_data
+                .iter_mut()
+                .find(|i| i.id == instance_id)
+            {
+                // Apply updates - support partial updates
+                if let Some(properties) = instance_update.update.get("properties") {
+                    match serde_json::from_value::<std::collections::HashMap<String, PropertyValue>>(
+                        properties.clone(),
+                    ) {
+                        Ok(new_properties) => {
+                            for (key, value) in new_properties {
+                                instance.properties.insert(key, value);
+                            }
+                        }
+                        Err(e) => {
+                            errors.push(BulkOperationError {
+                                id: instance_id.clone(),
+                                error: format!("Invalid property format: {}", e),
+                            });
+                            continue;
+                        }
+                    }
+                }
+
+                if let Some(relationships) = instance_update.update.get("relationships") {
+                    match serde_json::from_value::<
+                        std::collections::HashMap<String, RelationshipSelection>,
+                    >(relationships.clone())
+                    {
+                        Ok(new_relationships) => {
+                            for (key, value) in new_relationships {
+                                instance.relationships.insert(key, value);
+                            }
+                        }
+                        Err(e) => {
+                            errors.push(BulkOperationError {
+                                id: instance_id.clone(),
+                                error: format!("Invalid relationship format: {}", e),
+                            });
+                            continue;
+                        }
+                    }
+                }
+
+                if let Some(domain) = instance_update.update.get("domain") {
+                    match serde_json::from_value(domain.clone()) {
+                        Ok(new_domain) => instance.domain = new_domain,
+                        Err(e) => {
+                            errors.push(BulkOperationError {
+                                id: instance_id.clone(),
+                                error: format!("Invalid domain format: {}", e),
+                            });
+                            continue;
+                        }
+                    }
+                }
+
+                if let Some(class) = instance_update.update.get("class") {
+                    match serde_json::from_value(class.clone()) {
+                        Ok(new_class) => instance.class_id = new_class,
+                        Err(e) => {
+                            errors.push(BulkOperationError {
+                                id: instance_id.clone(),
+                                error: format!("Invalid class format: {}", e),
+                            });
+                            continue;
+                        }
+                    }
+                }
+
+                instance.updated_at = chrono::Utc::now();
+                updated_instances.push(instance.clone());
+            }
+        } else {
+            // Instance doesn't exist - create it
+            let now = chrono::Utc::now();
+
+            let class = match instance_update.update.get("class") {
+                Some(c) => match serde_json::from_value(c.clone()) {
+                    Ok(class_id) => class_id,
+                    Err(e) => {
+                        errors.push(BulkOperationError {
+                            id: instance_id.clone(),
+                            error: format!("Missing or invalid 'class' field: {}", e),
+                        });
+                        continue;
+                    }
+                },
+                None => {
+                    errors.push(BulkOperationError {
+                        id: instance_id.clone(),
+                        error: "Missing 'class' field for new instance".to_string(),
+                    });
+                    continue;
+                }
+            };
+
+            let mut new_instance = Instance {
+                id: instance_id.clone(),
+                class_id: class,
+                domain: None,
+                properties: std::collections::HashMap::new(),
+                relationships: std::collections::HashMap::new(),
+                created_by: "api-user".to_string(),
+                created_at: now,
+                updated_by: "api-user".to_string(),
+                updated_at: now,
+            };
+
+            // Apply the updates to the new instance
+            if let Some(properties) = instance_update.update.get("properties") {
+                match serde_json::from_value::<std::collections::HashMap<String, PropertyValue>>(
+                    properties.clone(),
+                ) {
+                    Ok(new_properties) => {
+                        new_instance.properties = new_properties;
+                    }
+                    Err(e) => {
+                        errors.push(BulkOperationError {
+                            id: instance_id.clone(),
+                            error: format!("Invalid property format: {}", e),
+                        });
+                        continue;
+                    }
+                }
+            }
+
+            if let Some(relationships) = instance_update.update.get("relationships") {
+                match serde_json::from_value::<std::collections::HashMap<String, RelationshipSelection>>(
+                    relationships.clone(),
+                ) {
+                    Ok(new_relationships) => {
+                        new_instance.relationships = new_relationships;
+                    }
+                    Err(e) => {
+                        errors.push(BulkOperationError {
+                            id: instance_id.clone(),
+                            error: format!("Invalid relationship format: {}", e),
+                        });
+                        continue;
+                    }
+                }
+            }
+
+            if let Some(domain) = instance_update.update.get("domain") {
+                match serde_json::from_value(domain.clone()) {
+                    Ok(new_domain) => new_instance.domain = new_domain,
+                    Err(e) => {
+                        errors.push(BulkOperationError {
+                            id: instance_id.clone(),
+                            error: format!("Invalid domain format: {}", e),
+                        });
+                        continue;
+                    }
+                }
+            }
+
+            working_commit.instances_data.push(new_instance.clone());
+            updated_instances.push(new_instance);
+        }
+    }
+
+    // Save the working commit
+    if let Err(e) = store.update_working_commit(working_commit).await {
+        return Err((
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(ErrorResponse::new(&format!(
+                "Failed to update working commit: {}",
+                e
+            ))),
+        ));
+    }
+
+    Ok(Json(BulkInstanceResponse {
+        updated: updated_instances,
+        errors,
+    }))
 }
 
 /// Delete a class from the working commit
