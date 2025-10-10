@@ -8337,6 +8337,7 @@ pub use upsert_branch as upsert_version;
 pub async fn batch_query_instance_configuration<S: Store>(
     State(store): State<AppState<S>>,
     Path((db_id, instance_id)): Path<(Id, Id)>,
+    Query(params): Query<std::collections::HashMap<String, String>>,
     RequestJson(request): RequestJson<BatchInstanceQueryRequest>,
 ) -> Result<Json<BatchQueryResponse>, (StatusCode, Json<ErrorResponse>)> {
     // Get main branch for this database
@@ -8345,7 +8346,7 @@ pub async fn batch_query_instance_configuration<S: Store>(
         Err((status, error)) => return Err((status, error)),
     };
 
-    batch_query_instance_configuration_impl(&*store, db_id, main_branch_name, instance_id, request)
+    batch_query_instance_configuration_impl(&*store, db_id, main_branch_name, instance_id, request, params)
         .await
 }
 
@@ -8353,6 +8354,7 @@ pub async fn batch_query_instance_configuration<S: Store>(
 pub async fn batch_query_branch_instance_configuration<S: Store>(
     State(store): State<AppState<S>>,
     Path((db_id, branch_id, instance_id)): Path<(Id, Id, Id)>,
+    Query(params): Query<std::collections::HashMap<String, String>>,
     RequestJson(request): RequestJson<BatchInstanceQueryRequest>,
 ) -> Result<Json<BatchQueryResponse>, (StatusCode, Json<ErrorResponse>)> {
     let branch_name = match get_branch_name_from_legacy_id(&*store, &db_id, &branch_id).await {
@@ -8360,7 +8362,7 @@ pub async fn batch_query_branch_instance_configuration<S: Store>(
         Err(error_response) => return Err(error_response),
     };
 
-    batch_query_instance_configuration_impl(&*store, db_id, branch_name, instance_id, request).await
+    batch_query_instance_configuration_impl(&*store, db_id, branch_name, instance_id, request, params).await
 }
 
 /// Implementation for batch instance-specific configuration queries with multiple objectives
@@ -8370,12 +8372,25 @@ async fn batch_query_instance_configuration_impl<S: Store>(
     branch_name: String,
     instance_id: Id,
     request: BatchInstanceQueryRequest,
+    params: std::collections::HashMap<String, String>,
 ) -> Result<Json<BatchQueryResponse>, (StatusCode, Json<ErrorResponse>)> {
     use crate::logic::SolvePipelineWithStore;
     use crate::model::{NewConfigurationArtifact, ResolutionContext};
     use std::time::Instant;
 
     let batch_start = Instant::now();
+
+    // Extract class filter and property filters from query parameters
+    let class_filter: Option<Vec<String>> = params.get("class").map(|s| {
+        s.split(',').map(|s| s.trim().to_string()).collect()
+    });
+
+    // Extract property filters (all non-"class" parameters)
+    let property_filters: HashMap<String, String> = params
+        .iter()
+        .filter(|(key, _)| *key != "class")
+        .map(|(key, value)| (key.clone(), value.clone()))
+        .collect();
 
     // Get the branch to fetch current commit hash
     let branch = match store.get_branch(&database_id, &branch_name).await {
@@ -8440,9 +8455,46 @@ async fn batch_query_instance_configuration_impl<S: Store>(
     match batch_results {
         Ok(results) => {
             for (objective_id, artifact) in results {
+                // Apply class and property filters if specified
+                let mut filtered_artifact = artifact;
+
+                // Apply class filter
+                if let Some(ref class_filters) = class_filter {
+                    filtered_artifact.configuration.retain(|instance| {
+                        class_filters.contains(&instance.class_id)
+                    });
+                }
+
+                // Apply property filters
+                if !property_filters.is_empty() {
+                    filtered_artifact.configuration.retain(|instance| {
+                        // Check if all property filters match
+                        property_filters.iter().all(|(prop_name, filter_value)| {
+                            if let Some(prop_value) = instance.properties.get(prop_name) {
+                                // Compare the property value with the filter value
+                                match prop_value {
+                                    crate::model::PropertyValue::Literal(typed_val) => {
+                                        // Convert the typed value to string for comparison
+                                        let instance_value = match &typed_val.value {
+                                            serde_json::Value::String(s) => s.clone(),
+                                            serde_json::Value::Number(n) => n.to_string(),
+                                            serde_json::Value::Bool(b) => b.to_string(),
+                                            _ => return false,
+                                        };
+                                        &instance_value == filter_value
+                                    }
+                                    _ => false,
+                                }
+                            } else {
+                                false
+                            }
+                        })
+                    });
+                }
+
                 configurations.push(ConfigurationResult {
                     objective_id,
-                    artifact,
+                    artifact: filtered_artifact,
                     success: true,
                     error: None,
                 });
@@ -12456,10 +12508,11 @@ async fn execute_instance_query(
     use crate::logic::SolvePipeline;
     use crate::model::{CommitData, ResolutionContext, ResolutionPolicies};
 
-    // Convert URL parameters to objectives map and extract derived properties and class filters
+    // Convert URL parameters to objectives map and extract derived properties, class filters, and property filters
     let mut objective = HashMap::new();
     let mut derived_properties: Option<Vec<String>> = None;
     let mut class_filter: Option<Vec<String>> = None;
+    let mut property_filters: HashMap<String, String> = HashMap::new();
 
     for (key, value) in params {
         if key == "derived_properties" {
@@ -12469,7 +12522,11 @@ async fn execute_instance_query(
             // Handle comma-separated list of class filters
             class_filter = Some(value.split(',').map(|s| s.trim().to_string()).collect());
         } else if let Ok(weight) = value.parse::<f64>() {
+            // Numeric values are objectives
             objective.insert(key, weight);
+        } else {
+            // Non-numeric values are property filters
+            property_filters.insert(key, value);
         }
     }
 
@@ -12536,19 +12593,42 @@ async fn execute_instance_query(
             )
         })?;
 
-    // Apply class filter if specified
-    let filtered_artifact = if let Some(class_filters) = class_filter {
-        let mut filtered = artifact.clone();
+    // Apply class and property filters if specified
+    let mut filtered_artifact = artifact;
 
-        // Filter the configuration instances by class
-        filtered.configuration.retain(|instance| {
+    // Apply class filter
+    if let Some(class_filters) = class_filter {
+        filtered_artifact.configuration.retain(|instance| {
             class_filters.contains(&instance.class_id)
         });
+    }
 
-        filtered
-    } else {
-        artifact
-    };
+    // Apply property filters
+    if !property_filters.is_empty() {
+        filtered_artifact.configuration.retain(|instance| {
+            // Check if all property filters match
+            property_filters.iter().all(|(prop_name, filter_value)| {
+                if let Some(prop_value) = instance.properties.get(prop_name) {
+                    // Compare the property value with the filter value
+                    match prop_value {
+                        crate::model::PropertyValue::Literal(typed_val) => {
+                            // Convert the typed value to string for comparison
+                            let instance_value = match &typed_val.value {
+                                serde_json::Value::String(s) => s.clone(),
+                                serde_json::Value::Number(n) => n.to_string(),
+                                serde_json::Value::Bool(b) => b.to_string(),
+                                _ => return false,
+                            };
+                            &instance_value == filter_value
+                        }
+                        _ => false,
+                    }
+                } else {
+                    false
+                }
+            })
+        });
+    }
 
     Ok(Json(filtered_artifact))
 }
