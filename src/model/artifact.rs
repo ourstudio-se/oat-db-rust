@@ -394,11 +394,7 @@ pub struct ObjectiveSet {
 
     /// Map of instance ID to objective weight (coefficient for optimization)
     /// Positive weights favor selection, negative weights penalize selection
-    pub objectives: HashMap<String, f64>,
-
-    /// Optional name/description for this objective set
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub name: Option<String>,
+    pub objective: HashMap<String, f64>,
 }
 
 /// Response containing multiple configuration solutions
@@ -449,7 +445,7 @@ pub struct BatchQueryMetadata {
     /// Database and branch context
     pub database_id: String,
     pub branch_id: String,
-    
+
     /// Optional commit hash for point-in-time resolution
     #[serde(skip_serializing_if = "Option::is_none")]
     pub commit_hash: Option<String>,

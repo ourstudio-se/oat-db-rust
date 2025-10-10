@@ -206,10 +206,6 @@ pub fn create_router<S: Store + 'static>() -> Router<Arc<S>> {
         )
         // Batch query endpoints for multiple objectives
         .route(
-            "/databases/:db_id/instances/:instance_id/batch-query",
-            post(handlers::batch_query_instance_configuration::<S>),
-        )
-        .route(
             "/databases/:db_id/branches/:branch_id/instances/:instance_id/batch-query",
             post(handlers::batch_query_branch_instance_configuration::<S>),
         )

@@ -8,16 +8,12 @@ use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::sync::Arc;
 
-use crate::logic::branch_ops::{
-    BranchOperations, MergeValidationResult, RebaseResult, RebaseValidationResult,
-};
-use crate::logic::validate_simple::ValidationResult;
 use crate::logic::{Expander, SimpleValidator};
 use crate::model::{
     generate_id, BatchInstanceQueryRequest, BatchQueryMetadata, BatchQueryResponse, Branch,
     ClassDef, ClassDefUpdate, Commit, CommitTag, ConfigurationArtifact, ConfigurationResult,
-    Database, Domain, ExpandedInstance, Id, Instance, InstanceFilter, NewClassDef, NewCommit,
-    NewCommitTag, NewDatabase, NewWorkingCommit, PropertyValue, RelationshipSelection, Schema,
+    Database, Domain, ExpandedInstance, Id, Instance, NewClassDef, NewCommit, NewCommitTag,
+    NewDatabase, NewWorkingCommit, PropertyValue, RelationshipSelection, Schema,
     SimpleBatchInstanceQueryRequest, SimpleBatchQueryResponse, SimpleConfigurationResult,
     SimpleInstanceQueryRequest, TagQuery, TagType, TaggedCommit, UserContext, WorkingCommit,
     WorkingCommitStatus,
@@ -25,6 +21,13 @@ use crate::model::{
 use crate::store::traits::{
     BranchStore, CommitStore, DatabaseStore, Store, TagStore, VersionCompat, WorkingCommitStore,
 };
+use crate::{
+    logic::branch_ops::{
+        BranchOperations, MergeValidationResult, RebaseResult, RebaseValidationResult,
+    },
+    SolvePipeline,
+};
+use crate::{logic::validate_simple::ValidationResult, CommitData};
 
 pub type AppState<S> = Arc<S>;
 
@@ -8346,8 +8349,15 @@ pub async fn batch_query_instance_configuration<S: Store>(
         Err((status, error)) => return Err((status, error)),
     };
 
-    batch_query_instance_configuration_impl(&*store, db_id, main_branch_name, instance_id, request, params)
-        .await
+    batch_query_instance_configuration_impl(
+        &*store,
+        db_id,
+        main_branch_name,
+        instance_id,
+        request,
+        params,
+    )
+    .await
 }
 
 /// Batch query/solve configurations for a specific instance with multiple objectives on a specific branch
@@ -8362,7 +8372,15 @@ pub async fn batch_query_branch_instance_configuration<S: Store>(
         Err(error_response) => return Err(error_response),
     };
 
-    batch_query_instance_configuration_impl(&*store, db_id, branch_name, instance_id, request, params).await
+    batch_query_instance_configuration_impl(
+        &*store,
+        db_id,
+        branch_name,
+        instance_id,
+        request,
+        params,
+    )
+    .await
 }
 
 /// Implementation for batch instance-specific configuration queries with multiple objectives
@@ -8381,9 +8399,9 @@ async fn batch_query_instance_configuration_impl<S: Store>(
     let batch_start = Instant::now();
 
     // Extract class filter and property filters from query parameters
-    let class_filter: Option<Vec<String>> = params.get("class").map(|s| {
-        s.split(',').map(|s| s.trim().to_string()).collect()
-    });
+    let class_filter: Option<Vec<String>> = params
+        .get("class")
+        .map(|s| s.split(',').map(|s| s.trim().to_string()).collect());
 
     // Extract property filters (all non-"class" parameters)
     let property_filters: HashMap<String, String> = params
@@ -8412,12 +8430,20 @@ async fn batch_query_instance_configuration_impl<S: Store>(
     // Build ResolutionContext from path parameters
     // When querying via branch endpoint, always use the branch's current commit
     // The commit_hash in the request body is ignored for branch-based queries
-    let commit_hash = branch.current_commit_hash.clone();
+    let Some(commit_hash) = branch.current_commit_hash.clone() else {
+        return Err((
+            StatusCode::BAD_REQUEST,
+            Json(ErrorResponse::new(&format!(
+                "Branch '{}' has no current commit",
+                branch_name
+            ))),
+        ));
+    };
 
     let resolution_context = ResolutionContext {
         database_id: database_id.clone(),
         branch_id: branch_name.clone(),
-        commit_hash,
+        commit_hash: Some(commit_hash.clone()),
         policies: request.policies.clone(),
         metadata: request.context_metadata.clone(),
     };
@@ -8432,20 +8458,60 @@ async fn batch_query_instance_configuration_impl<S: Store>(
     let objective_sets: Vec<(String, HashMap<String, f64>)> = request
         .objectives
         .iter()
-        .map(|obj_set| (obj_set.id.clone(), obj_set.objectives.clone()))
+        .map(|obj_set| (obj_set.id.clone(), obj_set.objective.clone()))
         .collect();
 
-    // Create solve pipeline and execute with batch optimization
-    let pipeline = SolvePipelineWithStore::new(&*store);
+    // Resolve commit data from commit hash
+    let commit = match store.get_commit(commit_hash.as_str()).await {
+        Ok(Some(commit)) => match commit.get_data() {
+            Ok(data) => data,
+            Err(e) => {
+                return Err((
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    Json(ErrorResponse::new(&e.to_string())),
+                ));
+            }
+        },
+        Ok(None) => {
+            return Err((
+                StatusCode::NOT_FOUND,
+                Json(ErrorResponse::new("Commit not found")),
+            ));
+        }
+        Err(e) => {
+            return Err((
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(ErrorResponse::new(&e.to_string())),
+            ));
+        }
+    };
 
-    let batch_results = pipeline
-        .solve_instance_with_multiple_objectives_and_derived_properties(
-            solve_request,
-            instance_id.clone(),
-            objective_sets,
-            request.derived_properties.clone(),
-        )
-        .await;
+    let schema = &commit.schema;
+    let instances = &commit.instances;
+
+    // Expand instances
+    let mut expanded_instances: Vec<Instance> = Vec::new();
+    for instance in instances.iter() {
+        match Expander::expand_instance(instance, instances, schema).await {
+            Ok(expanded) => expanded_instances.push(expanded.to_instance()),
+            Err(_err) => {}
+        }
+    }
+
+    // Create solve pipeline and execute with batch optimization
+    // Working commit already contains the data we need directly
+    let commit_data = CommitData {
+        schema: schema.clone(),
+        instances: expanded_instances,
+    };
+    let derived_properties: Vec<String> = request.derived_properties.unwrap_or_default();
+    let pipeline = SolvePipeline::new(&commit_data);
+    let batch_results = pipeline.solve_instance_with_multiple_objectives_and_derived_properties(
+        solve_request,
+        instance_id.clone(),
+        objective_sets,
+        Some(derived_properties),
+    );
 
     // Process batch results
     let mut configurations = Vec::new();
@@ -8460,9 +8526,9 @@ async fn batch_query_instance_configuration_impl<S: Store>(
 
                 // Apply class filter
                 if let Some(ref class_filters) = class_filter {
-                    filtered_artifact.configuration.retain(|instance| {
-                        class_filters.contains(&instance.class_id)
-                    });
+                    filtered_artifact
+                        .configuration
+                        .retain(|instance| class_filters.contains(&instance.class_id));
                 }
 
                 // Apply property filters
@@ -8544,37 +8610,48 @@ async fn batch_query_instance_configuration_impl<S: Store>(
 pub async fn batch_query_working_commit_instance_configuration<S: Store + WorkingCommitStore>(
     State(store): State<AppState<S>>,
     Path((db_id, branch_name, instance_id)): Path<(Id, String, Id)>,
-    RequestJson(request): RequestJson<SimpleBatchInstanceQueryRequest>,
-) -> Result<Json<SimpleBatchQueryResponse>, (StatusCode, Json<ErrorResponse>)> {
-    use crate::logic::SolvePipelineWithStore;
+    Query(params): Query<std::collections::HashMap<String, String>>,
+    RequestJson(request): RequestJson<BatchInstanceQueryRequest>,
+) -> Result<Json<BatchQueryResponse>, (StatusCode, Json<ErrorResponse>)> {
     use crate::model::{NewConfigurationArtifact, ResolutionContext};
+    use std::time::Instant;
 
-    // Get the working commit for the branch
-    let working_commits = match store
-        .list_working_commits_for_branch(&db_id, &branch_name)
+    let batch_start = Instant::now();
+
+    // Extract class filter and property filters from query parameters
+    let class_filter: Option<Vec<String>> = params
+        .get("class")
+        .map(|s| s.split(',').map(|s| s.trim().to_string()).collect());
+
+    // Extract property filters (all non-"class" parameters)
+    let property_filters: HashMap<String, String> = params
+        .iter()
+        .filter(|(key, _)| *key != "class")
+        .map(|(key, value)| (key.clone(), value.clone()))
+        .collect();
+
+    // Verify branch exists
+    verify_branch_exists(&*store, &db_id, &branch_name).await?;
+
+    // Get the working commit
+    let working_commit = match store
+        .get_active_working_commit_for_branch(&db_id, &branch_name)
         .await
     {
-        Ok(commits) => commits,
+        Ok(Some(commit)) => commit,
+        Ok(None) => {
+            return Err((
+                StatusCode::NOT_FOUND,
+                Json(ErrorResponse::new("No active working commit found")),
+            ))
+        }
         Err(e) => {
             return Err((
                 StatusCode::INTERNAL_SERVER_ERROR,
                 Json(ErrorResponse::new(&e.to_string())),
-            ));
+            ))
         }
     };
-
-    // Find the active working commit for this branch
-    let working_commit = working_commits
-        .into_iter()
-        .find(|wc| matches!(wc.status, crate::model::WorkingCommitStatus::Active))
-        .ok_or_else(|| {
-            (
-                StatusCode::NOT_FOUND,
-                Json(ErrorResponse::new(
-                    "No active working commit found for this branch",
-                )),
-            )
-        })?;
 
     // Verify instance exists in working commit
     let instance_exists = working_commit
@@ -8589,59 +8666,109 @@ pub async fn batch_query_working_commit_instance_configuration<S: Store + Workin
         ));
     }
 
-    // Get the branch to fetch current commit hash
-    let branch = match store.get_branch(&db_id, &branch_name).await {
-        Ok(Some(branch)) => branch,
-        Ok(None) => {
-            return Err((
-                StatusCode::NOT_FOUND,
-                Json(ErrorResponse::new("Branch not found")),
-            ));
-        }
-        Err(e) => {
-            return Err((
-                StatusCode::INTERNAL_SERVER_ERROR,
-                Json(ErrorResponse::new(&e.to_string())),
-            ));
-        }
-    };
-
     // Build ResolutionContext for working commit
     let resolution_context = ResolutionContext {
         database_id: db_id.clone(),
         branch_id: branch_name.clone(),
-        commit_hash: branch.current_commit_hash.clone(),
-        policies: Default::default(),
-        metadata: None,
+        commit_hash: Some(working_commit.id.clone()),
+        policies: request.policies.clone(),
+        metadata: request.context_metadata.clone(),
     };
 
     // OPTIMIZED: Process all objective sets in a single batch call
     let solve_request = NewConfigurationArtifact {
         resolution_context: resolution_context.clone(),
-        user_metadata: None,
+        user_metadata: request.user_metadata.clone(),
     };
 
-    // Convert simple request to batch format
-    let objective_sets = request.to_objective_sets();
+    // Convert objective sets to batch format
+    let objective_sets: Vec<(String, HashMap<String, f64>)> = request
+        .objectives
+        .iter()
+        .map(|obj_set| (obj_set.id.clone(), obj_set.objective.clone()))
+        .collect();
+
+    let schema = &working_commit.schema_data;
+    let instances = &working_commit.instances_data;
+
+    // Expand instances
+    let mut expanded_instances: Vec<Instance> = Vec::new();
+    for instance in instances.iter() {
+        match Expander::expand_instance(instance, instances, schema).await {
+            Ok(expanded) => expanded_instances.push(expanded.to_instance()),
+            Err(_err) => {}
+        }
+    }
 
     // Create solve pipeline and execute with batch optimization
-    let pipeline = SolvePipelineWithStore::new(&*store);
+    // Working commit already contains the data we need directly
+    let commit_data = CommitData {
+        schema: schema.clone(),
+        instances: expanded_instances,
+    };
+    let derived_properties: Vec<String> = request.derived_properties.unwrap_or_default();
+    let pipeline = SolvePipeline::new(&commit_data);
+    let batch_results = pipeline.solve_instance_with_multiple_objectives_and_derived_properties(
+        solve_request,
+        instance_id.clone(),
+        objective_sets,
+        Some(derived_properties),
+    );
 
-    let batch_results = pipeline
-        .solve_instance_with_multiple_objectives_and_derived_properties(
-            solve_request,
-            instance_id.clone(),
-            objective_sets.clone(),
-            request.derived_properties.clone(),
-        )
-        .await;
+    // Process batch results
+    let mut configurations = Vec::new();
+    let mut successful_solutions = 0;
+    let failed_solutions = 0;
 
-    // Process batch results into simple response format
-    let results = match batch_results {
-        Ok(artifacts) => artifacts
-            .into_iter()
-            .map(|(id, configuration)| SimpleConfigurationResult { id, configuration })
-            .collect(),
+    match batch_results {
+        Ok(results) => {
+            for (objective_id, artifact) in results {
+                // Apply class and property filters if specified
+                let mut filtered_artifact = artifact;
+
+                // Apply class filter
+                if let Some(ref class_filters) = class_filter {
+                    filtered_artifact
+                        .configuration
+                        .retain(|instance| class_filters.contains(&instance.class_id));
+                }
+
+                // Apply property filters
+                if !property_filters.is_empty() {
+                    filtered_artifact.configuration.retain(|instance| {
+                        // Check if all property filters match
+                        property_filters.iter().all(|(prop_name, filter_value)| {
+                            if let Some(prop_value) = instance.properties.get(prop_name) {
+                                // Compare the property value with the filter value
+                                match prop_value {
+                                    crate::model::PropertyValue::Literal(typed_val) => {
+                                        // Convert the typed value to string for comparison
+                                        let instance_value = match &typed_val.value {
+                                            serde_json::Value::String(s) => s.clone(),
+                                            serde_json::Value::Number(n) => n.to_string(),
+                                            serde_json::Value::Bool(b) => b.to_string(),
+                                            _ => return false,
+                                        };
+                                        &instance_value == filter_value
+                                    }
+                                    _ => false,
+                                }
+                            } else {
+                                false
+                            }
+                        })
+                    });
+                }
+
+                configurations.push(ConfigurationResult {
+                    objective_id,
+                    artifact: filtered_artifact,
+                    success: true,
+                    error: None,
+                });
+                successful_solutions += 1;
+            }
+        }
         Err(e) => {
             // Check if this is an unsatisfiable constraints error (client error)
             let status_code = if e.is_unsatisfiable() {
@@ -8654,9 +8781,23 @@ pub async fn batch_query_working_commit_instance_configuration<S: Store + Workin
                 Json(ErrorResponse::new(&format!("Batch solve failed: {}", e))),
             ));
         }
-    };
+    }
 
-    let response = SimpleBatchQueryResponse { results };
+    let batch_duration = batch_start.elapsed();
+
+    let response = BatchQueryResponse {
+        configurations,
+        batch_metadata: crate::model::BatchQueryMetadata {
+            total_time_ms: batch_duration.as_millis() as u64,
+            objectives_processed: request.objectives.len(),
+            successful_solutions,
+            failed_solutions,
+            queried_instance_id: instance_id.to_string(),
+            database_id: db_id.to_string(),
+            branch_id: branch_name.clone(),
+            commit_hash: Some(working_commit.id).clone(),
+        },
+    };
 
     Ok(Json(response))
 }
@@ -8665,10 +8806,24 @@ pub async fn batch_query_working_commit_instance_configuration<S: Store + Workin
 pub async fn batch_query_commit_instance_configuration<S: Store + CommitStore>(
     State(store): State<AppState<S>>,
     Path((db_id, commit_hash, instance_id)): Path<(Id, String, Id)>,
-    RequestJson(request): RequestJson<SimpleBatchInstanceQueryRequest>,
-) -> Result<Json<SimpleBatchQueryResponse>, (StatusCode, Json<ErrorResponse>)> {
-    use crate::logic::SolvePipelineWithStore;
+    Query(params): Query<std::collections::HashMap<String, String>>,
+    RequestJson(request): RequestJson<BatchInstanceQueryRequest>,
+) -> Result<Json<BatchQueryResponse>, (StatusCode, Json<ErrorResponse>)> {
     use crate::model::{NewConfigurationArtifact, ResolutionContext};
+    use std::time::Instant;
+    let batch_start = Instant::now();
+
+    // Extract class filter and property filters from query parameters
+    let class_filter: Option<Vec<String>> = params
+        .get("class")
+        .map(|s| s.split(',').map(|s| s.trim().to_string()).collect());
+
+    // Extract property filters (all non-"class" parameters)
+    let property_filters: HashMap<String, String> = params
+        .iter()
+        .filter(|(key, _)| *key != "class")
+        .map(|(key, value)| (key.clone(), value.clone()))
+        .collect();
 
     // Verify commit exists and belongs to the database
     let commit = match store.get_commit(&commit_hash).await {
@@ -8709,6 +8864,7 @@ pub async fn batch_query_commit_instance_configuration<S: Store + CommitStore>(
         }
     };
 
+    // Verify instance exists in working commit
     let instance_exists = commit_data
         .instances
         .iter()
@@ -8717,46 +8873,113 @@ pub async fn batch_query_commit_instance_configuration<S: Store + CommitStore>(
     if !instance_exists {
         return Err((
             StatusCode::NOT_FOUND,
-            Json(ErrorResponse::new("Instance not found in commit")),
+            Json(ErrorResponse::new("Instance not found in working commit")),
         ));
     }
 
-    // Build ResolutionContext for commit query
+    // Build ResolutionContext for working commit
     let resolution_context = ResolutionContext {
         database_id: db_id.clone(),
-        branch_id: "commit".to_string(), // Use "commit" as branch_id for commit-specific queries
-        commit_hash: Some(commit_hash.clone()),
-        policies: Default::default(),
-        metadata: None,
+        branch_id: "commit".to_string(),
+        commit_hash: Some(commit.hash.clone()),
+        policies: request.policies.clone(),
+        metadata: request.context_metadata.clone(),
     };
 
     // OPTIMIZED: Process all objective sets in a single batch call
     let solve_request = NewConfigurationArtifact {
         resolution_context: resolution_context.clone(),
-        user_metadata: None,
+        user_metadata: request.user_metadata.clone(),
     };
 
-    // Convert simple request to batch format
-    let objective_sets = request.to_objective_sets();
+    // Convert objective sets to batch format
+    let objective_sets: Vec<(String, HashMap<String, f64>)> = request
+        .objectives
+        .iter()
+        .map(|obj_set| (obj_set.id.clone(), obj_set.objective.clone()))
+        .collect();
+
+    let schema = &commit_data.schema;
+    let instances = &commit_data.instances;
+
+    // Expand instances
+    let mut expanded_instances: Vec<Instance> = Vec::new();
+    for instance in instances.iter() {
+        match Expander::expand_instance(instance, instances, schema).await {
+            Ok(expanded) => expanded_instances.push(expanded.to_instance()),
+            Err(_err) => {}
+        }
+    }
 
     // Create solve pipeline and execute with batch optimization
-    let pipeline = SolvePipelineWithStore::new(&*store);
+    // Working commit already contains the data we need directly
+    let commit_data = CommitData {
+        schema: schema.clone(),
+        instances: expanded_instances,
+    };
+    let derived_properties: Vec<String> = request.derived_properties.unwrap_or_default();
+    let pipeline = SolvePipeline::new(&commit_data);
+    let batch_results = pipeline.solve_instance_with_multiple_objectives_and_derived_properties(
+        solve_request,
+        instance_id.clone(),
+        objective_sets,
+        Some(derived_properties),
+    );
 
-    let batch_results = pipeline
-        .solve_instance_with_multiple_objectives_and_derived_properties(
-            solve_request,
-            instance_id.clone(),
-            objective_sets.clone(),
-            request.derived_properties.clone(),
-        )
-        .await;
+    // Process batch results
+    let mut configurations = Vec::new();
+    let mut successful_solutions = 0;
+    let failed_solutions = 0;
 
-    // Process batch results into simple response format
-    let results = match batch_results {
-        Ok(artifacts) => artifacts
-            .into_iter()
-            .map(|(id, configuration)| SimpleConfigurationResult { id, configuration })
-            .collect(),
+    match batch_results {
+        Ok(results) => {
+            for (objective_id, artifact) in results {
+                // Apply class and property filters if specified
+                let mut filtered_artifact = artifact;
+
+                // Apply class filter
+                if let Some(ref class_filters) = class_filter {
+                    filtered_artifact
+                        .configuration
+                        .retain(|instance| class_filters.contains(&instance.class_id));
+                }
+
+                // Apply property filters
+                if !property_filters.is_empty() {
+                    filtered_artifact.configuration.retain(|instance| {
+                        // Check if all property filters match
+                        property_filters.iter().all(|(prop_name, filter_value)| {
+                            if let Some(prop_value) = instance.properties.get(prop_name) {
+                                // Compare the property value with the filter value
+                                match prop_value {
+                                    crate::model::PropertyValue::Literal(typed_val) => {
+                                        // Convert the typed value to string for comparison
+                                        let instance_value = match &typed_val.value {
+                                            serde_json::Value::String(s) => s.clone(),
+                                            serde_json::Value::Number(n) => n.to_string(),
+                                            serde_json::Value::Bool(b) => b.to_string(),
+                                            _ => return false,
+                                        };
+                                        &instance_value == filter_value
+                                    }
+                                    _ => false,
+                                }
+                            } else {
+                                false
+                            }
+                        })
+                    });
+                }
+
+                configurations.push(ConfigurationResult {
+                    objective_id,
+                    artifact: filtered_artifact,
+                    success: true,
+                    error: None,
+                });
+                successful_solutions += 1;
+            }
+        }
         Err(e) => {
             // Check if this is an unsatisfiable constraints error (client error)
             let status_code = if e.is_unsatisfiable() {
@@ -8769,9 +8992,23 @@ pub async fn batch_query_commit_instance_configuration<S: Store + CommitStore>(
                 Json(ErrorResponse::new(&format!("Batch solve failed: {}", e))),
             ));
         }
-    };
+    }
 
-    let response = SimpleBatchQueryResponse { results };
+    let batch_duration = batch_start.elapsed();
+
+    let response = BatchQueryResponse {
+        configurations,
+        batch_metadata: crate::model::BatchQueryMetadata {
+            total_time_ms: batch_duration.as_millis() as u64,
+            objectives_processed: request.objectives.len(),
+            successful_solutions,
+            failed_solutions,
+            queried_instance_id: instance_id.to_string(),
+            database_id: db_id.to_string(),
+            branch_id: "commit".to_string(),
+            commit_hash: Some(commit.hash).clone(),
+        },
+    };
 
     Ok(Json(response))
 }
@@ -10187,7 +10424,10 @@ pub async fn validate_working_commit<S: WorkingCommitStore + Store>(
 
     // Additional validation: Check that all relationships resolve to at least one instance
     for instance in &working_commit.instances_data {
-        if let Some(class_def) = working_commit.schema_data.get_class_by_id(&instance.class_id) {
+        if let Some(class_def) = working_commit
+            .schema_data
+            .get_class_by_id(&instance.class_id)
+        {
             SimpleValidator::validate_relationship_resolution(
                 instance,
                 class_def,
@@ -11358,7 +11598,10 @@ pub async fn bulk_update_working_commit_classes<S: WorkingCommitStore + Store + 
                 properties: class_update.update.properties.unwrap_or_default(),
                 relationships: class_update.update.relationships.unwrap_or_default(),
                 derived: class_update.update.derived.unwrap_or_default(),
-                domain_constraint: class_update.update.domain_constraint.unwrap_or_else(Domain::binary),
+                domain_constraint: class_update
+                    .update
+                    .domain_constraint
+                    .unwrap_or_else(Domain::binary),
                 description: class_update.update.description,
                 base: class_update.update.base.unwrap_or_default(),
                 created_by: "api-user".to_string(),
@@ -11587,9 +11830,10 @@ pub async fn bulk_update_working_commit_instances<S: WorkingCommitStore + Store 
             }
 
             if let Some(relationships) = instance_update.update.get("relationships") {
-                match serde_json::from_value::<std::collections::HashMap<String, RelationshipSelection>>(
-                    relationships.clone(),
-                ) {
+                match serde_json::from_value::<
+                    std::collections::HashMap<String, RelationshipSelection>,
+                >(relationships.clone())
+                {
                     Ok(new_relationships) => {
                         new_instance.relationships = new_relationships;
                     }
@@ -12598,9 +12842,9 @@ async fn execute_instance_query(
 
     // Apply class filter
     if let Some(class_filters) = class_filter {
-        filtered_artifact.configuration.retain(|instance| {
-            class_filters.contains(&instance.class_id)
-        });
+        filtered_artifact
+            .configuration
+            .retain(|instance| class_filters.contains(&instance.class_id));
     }
 
     // Apply property filters

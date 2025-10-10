@@ -185,7 +185,10 @@ impl<'a> SolvePipeline<'a> {
 
                                         // Determine and add type based on the JSON value type
                                         let type_str = get_json_value_type(&value);
-                                        property_map.insert("type".to_string(), serde_json::Value::String(type_str.to_string()));
+                                        property_map.insert(
+                                            "type".to_string(),
+                                            serde_json::Value::String(type_str.to_string()),
+                                        );
 
                                         artifact
                                             .derived_properties
@@ -660,19 +663,59 @@ impl<'a> SolvePipeline<'a> {
                         } else {
                             // For multiple variables, enforce exactly one must be selected
                             model.set_equal(pldag_vars, 1)
+                                .ok_or_else(|| anyhow::anyhow!(
+                                    "Failed to create 'equal' constraint for relationship '{}' (One quantifier)",
+                                    rel_def.id
+                                ))?
                         }
                     }
-                    Quantifier::AtLeast(n) => model.set_atleast(pldag_vars, *n as i64),
-                    Quantifier::AtMost(n) => model.set_atmost(pldag_vars, *n as i64),
-                    Quantifier::Exactly(n) => model.set_equal(pldag_vars, *n as i64),
+                    Quantifier::AtLeast(n) => model.set_atleast(pldag_vars, *n as i64)
+                        .ok_or_else(|| anyhow::anyhow!(
+                            "Failed to create 'at least {}' constraint for relationship '{}'",
+                            n, rel_def.id
+                        ))?,
+                    Quantifier::AtMost(n) => model.set_atmost(pldag_vars, *n as i64)
+                        .ok_or_else(|| anyhow::anyhow!(
+                            "Failed to create 'at most {}' constraint for relationship '{}'",
+                            n, rel_def.id
+                        ))?,
+                    Quantifier::Exactly(n) => model.set_equal(pldag_vars, *n as i64)
+                        .ok_or_else(|| anyhow::anyhow!(
+                            "Failed to create 'exactly {}' constraint for relationship '{}'",
+                            n, rel_def.id
+                        ))?,
                     Quantifier::Range(min, max) => {
-                        let min_id = model.set_atleast(pldag_vars.clone(), *min as i64);
-                        let max_id = model.set_atmost(pldag_vars, *max as i64);
+                        let min_id = model.set_atleast(pldag_vars.clone(), *min as i64)
+                            .ok_or_else(|| anyhow::anyhow!(
+                                "Failed to create 'at least {}' constraint for relationship '{}' (Range)",
+                                min, rel_def.id
+                            ))?;
+                        let max_id = model.set_atmost(pldag_vars, *max as i64)
+                            .ok_or_else(|| anyhow::anyhow!(
+                                "Failed to create 'at most {}' constraint for relationship '{}' (Range)",
+                                max, rel_def.id
+                            ))?;
                         model.set_and(vec![min_id, max_id])
+                            .ok_or_else(|| anyhow::anyhow!(
+                                "Failed to create 'and' constraint for relationship '{}' (Range)",
+                                rel_def.id
+                            ))?
                     }
-                    Quantifier::Optional => model.set_atleast(pldag_vars, 0),
-                    Quantifier::Any => model.set_or(pldag_vars),
-                    Quantifier::All => model.set_and(pldag_vars),
+                    Quantifier::Optional => model.set_atleast(pldag_vars, 0)
+                        .ok_or_else(|| anyhow::anyhow!(
+                            "Failed to create 'at least 0' constraint for relationship '{}' (Optional)",
+                            rel_def.id
+                        ))?,
+                    Quantifier::Any => model.set_or(pldag_vars)
+                        .ok_or_else(|| anyhow::anyhow!(
+                            "Failed to create 'or' constraint for relationship '{}' (Any)",
+                            rel_def.id
+                        ))?,
+                    Quantifier::All => model.set_and(pldag_vars)
+                        .ok_or_else(|| anyhow::anyhow!(
+                            "Failed to create 'and' constraint for relationship '{}' (All)",
+                            rel_def.id
+                        ))?,
                 };
 
                 constraint_ids.push(constraint_id);
@@ -681,27 +724,74 @@ impl<'a> SolvePipeline<'a> {
 
         // Combine all relationship constraints
         match class_def.base.op {
-            class::BaseOp::All => Ok(model.set_and(constraint_ids)),
-            class::BaseOp::Any => Ok(model.set_or(constraint_ids)),
-            class::BaseOp::AtLeast => Ok(model.set_atleast(
-                constraint_ids.iter().map(|id| id.as_str()).collect(),
-                class_def.base.val.unwrap_or(0) as i64,
-            )),
-            class::BaseOp::AtMost => Ok(model.set_atmost(
-                constraint_ids.iter().map(|id| id.as_str()).collect(),
-                class_def.base.val.unwrap_or(0) as i64,
-            )),
-            class::BaseOp::Exactly => Ok(model.set_equal(
-                constraint_ids.iter().map(|id| id.as_str()).collect(),
-                class_def.base.val.unwrap_or(0) as i64,
-            )),
+            class::BaseOp::All => model.set_and(constraint_ids).ok_or_else(|| {
+                anyhow::anyhow!(
+                    "Failed to create 'and' constraint for class '{}' base operation",
+                    class_def.id
+                )
+            }),
+            class::BaseOp::Any => model.set_or(constraint_ids).ok_or_else(|| {
+                anyhow::anyhow!(
+                    "Failed to create 'or' constraint for class '{}' base operation",
+                    class_def.id
+                )
+            }),
+            class::BaseOp::AtLeast => {
+                let val = class_def.base.val.unwrap_or(0);
+                model
+                    .set_atleast(
+                        constraint_ids.iter().map(|id| id.as_str()).collect(),
+                        val as i64,
+                    )
+                    .ok_or_else(|| {
+                        anyhow::anyhow!(
+                    "Failed to create 'at least {}' constraint for class '{}' base operation",
+                    val, class_def.id
+                )
+                    })
+            }
+            class::BaseOp::AtMost => {
+                let val = class_def.base.val.unwrap_or(0);
+                model
+                    .set_atmost(
+                        constraint_ids.iter().map(|id| id.as_str()).collect(),
+                        val as i64,
+                    )
+                    .ok_or_else(|| {
+                        anyhow::anyhow!(
+                    "Failed to create 'at most {}' constraint for class '{}' base operation",
+                    val, class_def.id
+                )
+                    })
+            }
+            class::BaseOp::Exactly => {
+                let val = class_def.base.val.unwrap_or(0);
+                model
+                    .set_equal(
+                        constraint_ids.iter().map(|id| id.as_str()).collect(),
+                        val as i64,
+                    )
+                    .ok_or_else(|| {
+                        anyhow::anyhow!(
+                    "Failed to create 'exactly {}' constraint for class '{}' base operation",
+                    val, class_def.id
+                )
+                    })
+            }
             class::BaseOp::Imply => {
                 if constraint_ids.len() != 2 {
                     Err(anyhow::anyhow!(
                         "Imply operator requires exactly 2 constraints"
                     ))
                 } else {
-                    Ok(model.set_imply(&constraint_ids[0], &constraint_ids[1]))
+                    model
+                        .set_imply(&constraint_ids[0], &constraint_ids[1])
+                        .ok_or_else(|| {
+                            anyhow::anyhow!(
+                                "Failed to create 'imply' constraint for class '{}' base operation",
+                                class_def.id
+                            )
+                        })
                 }
             }
             class::BaseOp::Equiv => {
@@ -710,7 +800,14 @@ impl<'a> SolvePipeline<'a> {
                         "Equiv operator requires exactly 2 constraints"
                     ))
                 } else {
-                    Ok(model.set_equiv(&constraint_ids[0], &constraint_ids[1]))
+                    model
+                        .set_equiv(&constraint_ids[0], &constraint_ids[1])
+                        .ok_or_else(|| {
+                            anyhow::anyhow!(
+                                "Failed to create 'equiv' constraint for class '{}' base operation",
+                                class_def.id
+                            )
+                        })
                 }
             }
         }
@@ -744,9 +841,15 @@ impl<'a> SolvePipeline<'a> {
         // Create root constraint (all instances must be valid)
         let all_vars: Vec<&str> = pldag_to_our.keys().map(|s| s.as_str()).collect();
         let root = if all_vars.is_empty() {
-            model.set_and::<String>(vec![])
+            model.set_and::<String>(vec![]).ok_or_else(|| {
+                SolveError::Other(anyhow::anyhow!("Failed to create empty root constraint"))
+            })?
         } else {
-            model.set_and(all_vars.into_iter().map(|s| s.to_string()).collect())
+            model
+                .set_and(all_vars.into_iter().map(|s| s.to_string()).collect())
+                .ok_or_else(|| {
+                    SolveError::Other(anyhow::anyhow!("Failed to create root 'and' constraint"))
+                })?
         };
 
         // Solve
