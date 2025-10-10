@@ -3535,7 +3535,7 @@ pub async fn get_openapi_spec<S: Store>(_state: State<AppState<S>>) -> Json<serd
                 "post": {
                     "tags": ["Branch Instances"],
                     "summary": "Batch query branch instance configurations",
-                    "description": "Query multiple configurations for a branch instance with different objectives",
+                    "description": "Query multiple configurations for a branch instance with different objectives. The branch's current commit is always used - any commit_hash provided in the request body is ignored.",
                     "parameters": [
                         {
                             "name": "db_id",
@@ -8010,12 +8010,10 @@ async fn batch_query_instance_configuration_impl<S: Store>(
         }
     };
 
-    // Build ResolutionContext from path parameters and request
-    // Use branch's current commit hash if not explicitly provided in request
-    let commit_hash = request
-        .commit_hash
-        .clone()
-        .or(branch.current_commit_hash.clone());
+    // Build ResolutionContext from path parameters
+    // When querying via branch endpoint, always use the branch's current commit
+    // The commit_hash in the request body is ignored for branch-based queries
+    let commit_hash = branch.current_commit_hash.clone();
 
     let resolution_context = ResolutionContext {
         database_id: database_id.clone(),
