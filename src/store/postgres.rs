@@ -13,6 +13,7 @@ use crate::store::traits::{
 pub struct PostgresStore {
     pool: PgPool,
     commit_cache: Arc<Mutex<CommitCache>>,
+    working_commit_cache: Arc<crate::store::working_commit_cache::WorkingCommitCache>,
 }
 
 impl Clone for PostgresStore {
@@ -20,6 +21,7 @@ impl Clone for PostgresStore {
         Self {
             pool: self.pool.clone(),
             commit_cache: Arc::clone(&self.commit_cache),
+            working_commit_cache: Arc::clone(&self.working_commit_cache),
         }
     }
 }
@@ -111,7 +113,14 @@ impl PostgresStore {
             Duration::from_secs(3600),
         )));
 
-        Ok(Self { pool, commit_cache })
+        // Create working commit cache with 1 hour TTL
+        let working_commit_cache = Arc::new(crate::store::working_commit_cache::WorkingCommitCache::new());
+
+        Ok(Self {
+            pool,
+            commit_cache,
+            working_commit_cache,
+        })
     }
 
     /// Run database migrations
@@ -128,6 +137,68 @@ impl PostgresStore {
     /// Get a reference to the connection pool
     pub fn pool(&self) -> &PgPool {
         &self.pool
+    }
+
+    /// Preload active working commits into cache
+    /// This should be called on startup to warm up the cache
+    pub async fn preload_working_commit_cache(&self) -> Result<usize> {
+        // Fetch all active working commits from database
+        let rows = sqlx::query!(
+            r#"
+            SELECT id, database_id, branch_name, based_on_hash, author, created_at, updated_at,
+                   schema_data, instances_data, status, merge_state
+            FROM working_commits
+            WHERE status = 'active'
+            ORDER BY updated_at DESC
+            "#
+        )
+        .fetch_all(&self.pool)
+        .await
+        .context("Failed to fetch active working commits for preload")?;
+
+        let mut count = 0;
+        for row in rows {
+            let mut schema_data: crate::model::Schema = serde_json::from_value(row.schema_data)
+                .context("Failed to deserialize schema data")?;
+
+            // Normalize the schema to ensure all PropertyDef instances have the value field
+            schema_data.normalize();
+
+            let instances_data: Vec<crate::model::Instance> =
+                serde_json::from_value(row.instances_data)
+                    .context("Failed to deserialize instances data")?;
+
+            let status = Self::parse_working_commit_status(&row.status);
+
+            let merge_state = if let Some(merge_state_json) = row.merge_state {
+                Some(
+                    serde_json::from_value::<crate::model::merge::MergeState>(merge_state_json)
+                        .context("Failed to deserialize merge_state")?,
+                )
+            } else {
+                None
+            };
+
+            let working_commit = crate::model::WorkingCommit {
+                id: row.id,
+                database_id: row.database_id,
+                branch_name: row.branch_name,
+                based_on_hash: row.based_on_hash.unwrap_or_else(String::new),
+                author: row.author,
+                created_at: row.created_at.to_rfc3339(),
+                updated_at: row.updated_at.to_rfc3339(),
+                schema_data,
+                instances_data,
+                status,
+                merge_state,
+            };
+
+            // Put in cache
+            self.working_commit_cache.put(working_commit).await;
+            count += 1;
+        }
+
+        Ok(count)
     }
 
     /// Parse working commit status from string
@@ -763,12 +834,17 @@ impl crate::store::traits::WorkingCommitStore for PostgresStore {
         &self,
         id: &crate::model::Id,
     ) -> Result<Option<crate::model::WorkingCommit>> {
-        // Fetching working commit by id
+        // Try cache first
+        if let Some(cached) = self.working_commit_cache.get(id).await {
+            return Ok(Some(cached));
+        }
+
+        // Cache miss - fetch from database
         let row = sqlx::query!(
             r#"
             SELECT id, database_id, branch_name, based_on_hash, author, created_at, updated_at,
                    schema_data, instances_data, status, merge_state
-            FROM working_commits 
+            FROM working_commits
             WHERE id = $1
             "#,
             id
@@ -778,10 +854,8 @@ impl crate::store::traits::WorkingCommitStore for PostgresStore {
         .context("Failed to fetch working commit")?;
 
         let Some(row) = row else {
-            // Working commit not found in database
             return Ok(None);
         };
-        // Found working commit with status
 
         let mut schema_data: crate::model::Schema =
             serde_json::from_value(row.schema_data).context("Failed to deserialize schema data")?;
@@ -803,7 +877,7 @@ impl crate::store::traits::WorkingCommitStore for PostgresStore {
             None
         };
 
-        Ok(Some(crate::model::WorkingCommit {
+        let working_commit = crate::model::WorkingCommit {
             id: row.id,
             database_id: row.database_id,
             branch_name: row.branch_name,
@@ -815,7 +889,12 @@ impl crate::store::traits::WorkingCommitStore for PostgresStore {
             instances_data,
             status,
             merge_state,
-        }))
+        };
+
+        // Put in cache for next time
+        self.working_commit_cache.put(working_commit.clone()).await;
+
+        Ok(Some(working_commit))
     }
 
     async fn list_working_commits_for_branch(
@@ -935,7 +1014,7 @@ impl crate::store::traits::WorkingCommitStore for PostgresStore {
 
         sqlx::query!(
             r#"
-            INSERT INTO working_commits (id, database_id, branch_name, based_on_hash, author, 
+            INSERT INTO working_commits (id, database_id, branch_name, based_on_hash, author,
                                        created_at, updated_at, schema_data, instances_data, status, merge_state)
             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
             "#,
@@ -959,7 +1038,9 @@ impl crate::store::traits::WorkingCommitStore for PostgresStore {
         .await
         .context("Failed to create working commit")?;
 
-        // Created working commit with status
+        // Put in cache
+        self.working_commit_cache.put(working_commit.clone()).await;
+
         Ok(working_commit)
     }
 
@@ -967,21 +1048,129 @@ impl crate::store::traits::WorkingCommitStore for PostgresStore {
         &self,
         mut working_commit: crate::model::WorkingCommit,
     ) -> Result<()> {
-        // Updating working commit with status and merge state
         // Touch the working commit to update timestamp
         working_commit.touch();
 
+        // Update cache immediately - this is fast
+        self.working_commit_cache.update(working_commit.clone()).await;
+
+        // Check if there are any old dirty entries that should be persisted to Postgres
+        // This happens when a working commit hasn't been accessed for a while
+        let dirty_entries = self.working_commit_cache.get_dirty_entries().await;
+
+        // Persist dirty entries to Postgres in the background
+        // We do this to ensure data consistency even if cache expires
+        for dirty_working_commit in dirty_entries {
+            // Skip the current one - we'll handle it next time
+            if dirty_working_commit.id == working_commit.id {
+                continue;
+            }
+
+            // Persist this dirty entry
+            let schema_json = serde_json::to_value(&dirty_working_commit.schema_data)
+                .context("Failed to serialize schema data")?;
+            let instances_json = serde_json::to_value(&dirty_working_commit.instances_data)
+                .context("Failed to serialize instances data")?;
+            let status_str = Self::working_commit_status_to_string(&dirty_working_commit.status);
+
+            let merge_state_json = if let Some(merge_state) = &dirty_working_commit.merge_state {
+                Some(serde_json::to_value(merge_state).context("Failed to serialize merge_state")?)
+            } else {
+                None
+            };
+
+            sqlx::query!(
+                r#"
+                UPDATE working_commits
+                SET schema_data = $2, instances_data = $3, status = $4, updated_at = $5, merge_state = $6
+                WHERE id = $1
+                "#,
+                dirty_working_commit.id,
+                schema_json,
+                instances_json,
+                status_str,
+                chrono::DateTime::parse_from_rfc3339(&dirty_working_commit.updated_at)
+                    .context("Failed to parse working commit updated_at")?
+                    .with_timezone(&chrono::Utc),
+                merge_state_json
+            )
+            .execute(&self.pool)
+            .await
+            .context("Failed to update working commit")?;
+
+            // Mark as clean
+            self.working_commit_cache.mark_clean(&dirty_working_commit.id).await;
+        }
+
+        Ok(())
+    }
+
+    async fn delete_working_commit(&self, id: &crate::model::Id) -> Result<bool> {
+        // Before deleting, check if this working commit is dirty and needs to be persisted
+        // This ensures we don't lose any uncommitted changes
+        let dirty_entries = self.working_commit_cache.get_dirty_entries().await;
+        for dirty_working_commit in dirty_entries {
+            if dirty_working_commit.id == *id {
+                // This is the one being deleted, so persist it one last time
+                let schema_json = serde_json::to_value(&dirty_working_commit.schema_data)
+                    .context("Failed to serialize schema data")?;
+                let instances_json = serde_json::to_value(&dirty_working_commit.instances_data)
+                    .context("Failed to serialize instances data")?;
+                let status_str = Self::working_commit_status_to_string(&dirty_working_commit.status);
+
+                let merge_state_json = if let Some(merge_state) = &dirty_working_commit.merge_state {
+                    Some(serde_json::to_value(merge_state).context("Failed to serialize merge_state")?)
+                } else {
+                    None
+                };
+
+                sqlx::query!(
+                    r#"
+                    UPDATE working_commits
+                    SET schema_data = $2, instances_data = $3, status = $4, updated_at = $5, merge_state = $6
+                    WHERE id = $1
+                    "#,
+                    dirty_working_commit.id,
+                    schema_json,
+                    instances_json,
+                    status_str,
+                    chrono::DateTime::parse_from_rfc3339(&dirty_working_commit.updated_at)
+                        .context("Failed to parse working commit updated_at")?
+                        .with_timezone(&chrono::Utc),
+                    merge_state_json
+                )
+                .execute(&self.pool)
+                .await
+                .context("Failed to update working commit before deletion")?;
+                break;
+            }
+        }
+
+        // Now delete from database
+        let result = sqlx::query!("DELETE FROM working_commits WHERE id = $1", id)
+            .execute(&self.pool)
+            .await
+            .context("Failed to delete working commit")?;
+
+        // Remove from cache
+        self.working_commit_cache.remove(id).await;
+
+        Ok(result.rows_affected() > 0)
+    }
+
+    async fn force_persist_working_commit(&self, id: &crate::model::Id) -> Result<()> {
+        // Get the working commit from cache or database
+        let working_commit = match self.get_working_commit(id).await? {
+            Some(wc) => wc,
+            None => return Err(anyhow::anyhow!("Working commit not found: {}", id)),
+        };
+
+        // Persist to PostgreSQL immediately
         let schema_json = serde_json::to_value(&working_commit.schema_data)
             .context("Failed to serialize schema data")?;
         let instances_json = serde_json::to_value(&working_commit.instances_data)
             .context("Failed to serialize instances data")?;
-        let status_str = match working_commit.status {
-            crate::model::WorkingCommitStatus::Active => "active",
-            crate::model::WorkingCommitStatus::Committing => "committing",
-            crate::model::WorkingCommitStatus::Abandoned => "abandoned",
-            crate::model::WorkingCommitStatus::Merging => "merging",
-            crate::model::WorkingCommitStatus::Rebasing => "rebasing",
-        };
+        let status_str = Self::working_commit_status_to_string(&working_commit.status);
 
         let merge_state_json = if let Some(merge_state) = &working_commit.merge_state {
             Some(serde_json::to_value(merge_state).context("Failed to serialize merge_state")?)
@@ -991,7 +1180,7 @@ impl crate::store::traits::WorkingCommitStore for PostgresStore {
 
         sqlx::query!(
             r#"
-            UPDATE working_commits 
+            UPDATE working_commits
             SET schema_data = $2, instances_data = $3, status = $4, updated_at = $5, merge_state = $6
             WHERE id = $1
             "#,
@@ -1006,19 +1195,12 @@ impl crate::store::traits::WorkingCommitStore for PostgresStore {
         )
         .execute(&self.pool)
         .await
-        .context("Failed to update working commit")?;
+        .context("Failed to persist working commit")?;
 
-        // Successfully updated working commit
+        // Mark as clean in cache
+        self.working_commit_cache.mark_clean(id).await;
+
         Ok(())
-    }
-
-    async fn delete_working_commit(&self, id: &crate::model::Id) -> Result<bool> {
-        let result = sqlx::query!("DELETE FROM working_commits WHERE id = $1", id)
-            .execute(&self.pool)
-            .await
-            .context("Failed to delete working commit")?;
-
-        Ok(result.rows_affected() > 0)
     }
 
     async fn get_active_working_commit_for_branch(
@@ -1026,6 +1208,14 @@ impl crate::store::traits::WorkingCommitStore for PostgresStore {
         database_id: &crate::model::Id,
         branch_name: &str,
     ) -> Result<Option<crate::model::WorkingCommit>> {
+        // Try cache first
+        if let Some(cached_id) = self.working_commit_cache.get_active_for_branch(database_id, branch_name).await {
+            if let Some(cached) = self.working_commit_cache.get(&cached_id).await {
+                return Ok(Some(cached));
+            }
+        }
+
+        // Cache miss - fetch from database
         // First clean up any duplicate active working commits
         sqlx::query!(
             r#"
@@ -1037,8 +1227,8 @@ impl crate::store::traits::WorkingCommitStore for PostgresStore {
             )
             UPDATE working_commits
             SET status = 'abandoned'
-            WHERE database_id = $1 
-              AND branch_name = $2 
+            WHERE database_id = $1
+              AND branch_name = $2
               AND status = 'active'
               AND id NOT IN (SELECT id FROM latest)
             "#,
@@ -1053,7 +1243,7 @@ impl crate::store::traits::WorkingCommitStore for PostgresStore {
             r#"
             SELECT id, database_id, branch_name, based_on_hash, author, created_at, updated_at,
                    schema_data, instances_data, status, merge_state
-            FROM working_commits 
+            FROM working_commits
             WHERE database_id = $1 AND branch_name = $2 AND status = 'active'
             ORDER BY updated_at DESC
             LIMIT 1
@@ -1089,7 +1279,7 @@ impl crate::store::traits::WorkingCommitStore for PostgresStore {
             None
         };
 
-        Ok(Some(crate::model::WorkingCommit {
+        let working_commit = crate::model::WorkingCommit {
             id: row.id,
             database_id: row.database_id,
             branch_name: row.branch_name,
@@ -1101,7 +1291,12 @@ impl crate::store::traits::WorkingCommitStore for PostgresStore {
             instances_data,
             status,
             merge_state,
-        }))
+        };
+
+        // Put in cache for next time
+        self.working_commit_cache.put(working_commit.clone()).await;
+
+        Ok(Some(working_commit))
     }
 }
 

@@ -37,6 +37,13 @@ async fn main() -> anyhow::Result<()> {
     postgres_store.migrate().await?;
     println!("Database ready with git-like schema");
 
+    // Preload working commit cache
+    println!("Preloading working commit cache...");
+    match postgres_store.preload_working_commit_cache().await {
+        Ok(count) => println!("Preloaded {} active working commit(s) into cache", count),
+        Err(e) => println!("Warning: Failed to preload working commit cache: {}", e),
+    }
+
     let store = Arc::new(postgres_store);
 
     // Load seed data for demonstration (optional)

@@ -120,6 +120,8 @@ pub trait WorkingCommitStore: Send + Sync {
     async fn delete_working_commit(&self, id: &Id) -> Result<bool>;
     /// Get the active working commit for a branch (if any)
     async fn get_active_working_commit_for_branch(&self, database_id: &Id, branch_name: &str) -> Result<Option<WorkingCommit>>;
+    /// Force persist a working commit to database immediately (bypassing cache delay)
+    async fn force_persist_working_commit(&self, id: &Id) -> Result<()>;
 }
 
 /// Store for managing commit tags

@@ -9262,6 +9262,71 @@ async fn enhance_working_commit_response_with_resolved_relationships<S: Store>(
     Ok(response)
 }
 
+/// Stage (persist) the working commit to PostgreSQL
+/// This forces an immediate write to the database, even if the entry is in cache
+pub async fn stage_working_commit<S: WorkingCommitStore + Store>(
+    State(store): State<AppState<S>>,
+    Path((db_id, branch_name)): Path<(Id, String)>,
+) -> Result<Json<serde_json::Value>, (StatusCode, Json<ErrorResponse>)> {
+    // Verify branch belongs to database
+    match store.get_branch(&db_id, &branch_name).await {
+        Ok(Some(version)) => {
+            if version.database_id != db_id {
+                return Err((
+                    StatusCode::NOT_FOUND,
+                    Json(ErrorResponse::new("Branch not found in this database")),
+                ));
+            }
+        }
+        Ok(None) => {
+            return Err((
+                StatusCode::NOT_FOUND,
+                Json(ErrorResponse::new("Branch not found")),
+            ))
+        }
+        Err(e) => {
+            return Err((
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(ErrorResponse::new(&e.to_string())),
+            ))
+        }
+    }
+
+    // Get the active working commit
+    let working_commit = match store
+        .get_active_working_commit_for_branch(&db_id, &branch_name)
+        .await
+    {
+        Ok(Some(wc)) => wc,
+        Ok(None) => {
+            return Err((
+                StatusCode::NOT_FOUND,
+                Json(ErrorResponse::new("No active working commit found")),
+            ))
+        }
+        Err(e) => {
+            return Err((
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(ErrorResponse::new(&e.to_string())),
+            ))
+        }
+    };
+
+    // Force persist to PostgreSQL immediately
+    match store.force_persist_working_commit(&working_commit.id).await {
+        Ok(_) => Ok(Json(serde_json::json!({
+            "status": "staged",
+            "message": "Working commit persisted to database",
+            "working_commit_id": working_commit.id,
+            "updated_at": working_commit.updated_at,
+        }))),
+        Err(e) => Err((
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(ErrorResponse::new(&e.to_string())),
+        )),
+    }
+}
+
 pub async fn get_active_working_commit_raw<S: WorkingCommitStore + Store>(
     State(store): State<AppState<S>>,
     Path((db_id, branch_name)): Path<(Id, String)>,
@@ -11181,30 +11246,7 @@ pub async fn update_working_commit_instance<S: WorkingCommitStore + Store + Bran
     Path((db_id, branch_name, instance_id)): Path<(Id, String, Id)>,
     RequestJson(instance_update): RequestJson<serde_json::Value>,
 ) -> Result<Json<Instance>, (StatusCode, Json<ErrorResponse>)> {
-    // Verify branch belongs to database
-    match store.get_branch(&db_id, &branch_name).await {
-        Ok(Some(version)) => {
-            if version.database_id != db_id {
-                return Err((
-                    StatusCode::NOT_FOUND,
-                    Json(ErrorResponse::new("Branch not found in this database")),
-                ));
-            }
-        }
-        Ok(None) => {
-            return Err((
-                StatusCode::NOT_FOUND,
-                Json(ErrorResponse::new("Branch not found")),
-            ))
-        }
-        Err(e) => {
-            return Err((
-                StatusCode::INTERNAL_SERVER_ERROR,
-                Json(ErrorResponse::new(&e.to_string())),
-            ))
-        }
-    }
-
+    
     // Get or create the working commit
     let mut working_commit = get_or_create_working_commit(&*store, &db_id, &branch_name)
         .await
@@ -11978,32 +12020,6 @@ pub async fn create_working_commit_instance<S: WorkingCommitStore + Store + Bran
         instance.id = generate_id();
     }
 
-    // Check if instance ID already exists globally in this database
-    // This prevents solver issues from duplicate IDs across branches
-    let commits = store
-        .list_commits_for_database(&db_id, None)
-        .await
-        .map_err(|e| {
-            (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                Json(ErrorResponse::new(&e.to_string())),
-            )
-        })?;
-
-    for commit in commits {
-        if let Ok(Some(commit_data)) = store.get_commit_data(&commit.hash).await {
-            if commit_data.instances.iter().any(|i| i.id == instance.id) {
-                return Err((
-                    StatusCode::CONFLICT,
-                    Json(ErrorResponse::new(&format!(
-                        "Instance '{}' already exists in database (found in commit {}). Instance IDs must be globally unique for solver correctness.",
-                        instance.id, commit.hash
-                    ))),
-                ));
-            }
-        }
-    }
-
     // Get or create the working commit
     let mut working_commit = get_or_create_working_commit(&*store, &db_id, &branch_name)
         .await
@@ -12013,24 +12029,6 @@ pub async fn create_working_commit_instance<S: WorkingCommitStore + Store + Bran
                 Json(ErrorResponse::new(&e.to_string())),
             )
         })?;
-
-    // Check if instance already exists in the working commit
-    if working_commit
-        .instances_data
-        .iter()
-        .any(|i| i.id == instance.id)
-    {
-        return Err((
-            StatusCode::CONFLICT,
-            Json(ErrorResponse::new(&format!(
-                "Instance '{}' already exists",
-                instance.id
-            ))),
-        ));
-    }
-
-    // NOTE: No validation here - following the validation philosophy that create/update operations
-    // should never be blocked by validation. Users can validate when ready using dedicated endpoints.
 
     // Set audit trail for new instance
     instance.created_by = user_context.user_id.clone();

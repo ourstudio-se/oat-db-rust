@@ -213,7 +213,7 @@ impl Expander {
                 ResolutionMethod::ExplicitIds,
                 Some(ResolutionDetails {
                     original_definition: Some(serde_json::to_value(selection).unwrap_or_default()),
-                    resolved_from: Some("simple_ids".to_string()),
+                    resolved_from: Some("explicit_ids".to_string()),
                     filter_description: None,
                     total_pool_size: Some(ids.len()),
                     filtered_out_count: Some(0),

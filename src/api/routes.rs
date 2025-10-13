@@ -316,6 +316,11 @@ pub fn create_router<S: Store + 'static>() -> Router<Arc<S>> {
             "/databases/:db_id/branches/:branch_id/working-commit/instances/bulk",
             patch(handlers::bulk_update_working_commit_instances::<S>),
         )
+        // Stage working commit (force persist to database)
+        .route(
+            "/databases/:db_id/branches/:branch_id/working-commit/stage",
+            get(handlers::stage_working_commit::<S>),
+        )
         // Batch query endpoints for working commits
         .route(
             "/databases/:db_id/branches/:branch_id/working-commit/instances/:instance_id/batch-query",
