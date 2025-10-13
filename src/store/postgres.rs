@@ -1,14 +1,97 @@
 use anyhow::{Context, Result};
 use sqlx::{postgres::PgPoolOptions, PgPool, Row};
+use std::collections::HashMap;
+use std::sync::{Arc, Mutex};
+use std::time::{Duration, Instant};
 
 use crate::model::{Branch, ClassDef, Database, Id, Instance, InstanceFilter, Schema};
 use crate::store::traits::{
     BranchStore, CommitStore, DatabaseStore, InstanceStore, SchemaStore, Store, WorkingCommitStore,
 };
 
-#[derive(Debug, Clone)]
+#[derive(Debug)]
 pub struct PostgresStore {
     pool: PgPool,
+    commit_cache: Arc<Mutex<CommitCache>>,
+}
+
+impl Clone for PostgresStore {
+    fn clone(&self) -> Self {
+        Self {
+            pool: self.pool.clone(),
+            commit_cache: Arc::clone(&self.commit_cache),
+        }
+    }
+}
+
+#[derive(Debug)]
+struct CommitCache {
+    cache: HashMap<String, CachedCommit>,
+    max_size: usize,
+    ttl: Duration,
+}
+
+#[derive(Debug, Clone)]
+struct CachedCommit {
+    commit: crate::model::CommitData,
+    inserted_at: Instant,
+}
+
+impl CommitCache {
+    fn new(max_size: usize, ttl: Duration) -> Self {
+        Self {
+            cache: HashMap::new(),
+            max_size,
+            ttl,
+        }
+    }
+
+    fn get(&mut self, hash: &str) -> Option<crate::model::CommitData> {
+        // Clean expired entries
+        self.clean_expired();
+
+        self.cache.get(hash).map(|cached| cached.commit.clone())
+    }
+
+    fn insert(&mut self, hash: String, commit: crate::model::CommitData) {
+        // Clean expired entries first
+        self.clean_expired();
+
+        // If we're at capacity, remove the oldest entry
+        if self.cache.len() >= self.max_size {
+            let oldest_key = self
+                .cache
+                .iter()
+                .min_by_key(|(_, cached)| cached.inserted_at)
+                .map(|(k, _)| k.clone());
+
+            if let Some(key) = oldest_key {
+                self.cache.remove(&key);
+            }
+        }
+
+        self.cache.insert(
+            hash,
+            CachedCommit {
+                commit,
+                inserted_at: Instant::now(),
+            },
+        );
+    }
+
+    fn clean_expired(&mut self) {
+        let now = Instant::now();
+        self.cache
+            .retain(|_, cached| now.duration_since(cached.inserted_at) < self.ttl);
+    }
+
+    fn clear(&mut self) {
+        self.cache.clear();
+    }
+
+    fn size(&self) -> usize {
+        self.cache.len()
+    }
 }
 
 impl PostgresStore {
@@ -20,7 +103,15 @@ impl PostgresStore {
             .await
             .context("Failed to create PostgreSQL connection pool")?;
 
-        Ok(Self { pool })
+        // Create commit cache with reasonable defaults:
+        // - Max 1000 commits in memory
+        // - TTL of 1 hour
+        let commit_cache = Arc::new(Mutex::new(CommitCache::new(
+            1000,
+            Duration::from_secs(3600),
+        )));
+
+        Ok(Self { pool, commit_cache })
     }
 
     /// Run database migrations
@@ -38,7 +129,7 @@ impl PostgresStore {
     pub fn pool(&self) -> &PgPool {
         &self.pool
     }
-    
+
     /// Parse working commit status from string
     fn parse_working_commit_status(status: &str) -> crate::model::WorkingCommitStatus {
         match status {
@@ -50,7 +141,7 @@ impl PostgresStore {
             _ => crate::model::WorkingCommitStatus::Active,
         }
     }
-    
+
     /// Convert working commit status to string
     fn working_commit_status_to_string(status: &crate::model::WorkingCommitStatus) -> &'static str {
         match status {
@@ -60,6 +151,21 @@ impl PostgresStore {
             crate::model::WorkingCommitStatus::Merging => "merging",
             crate::model::WorkingCommitStatus::Rebasing => "rebasing",
         }
+    }
+
+    /// Clear the commit cache (useful for testing or when memory is needed)
+    pub fn clear_commit_cache(&self) {
+        if let Ok(mut cache) = self.commit_cache.lock() {
+            cache.clear();
+        }
+    }
+
+    /// Get commit cache statistics
+    pub fn commit_cache_stats(&self) -> Option<(usize, usize)> {
+        self.commit_cache
+            .lock()
+            .ok()
+            .map(|cache| (cache.size(), cache.max_size))
     }
 }
 
@@ -130,12 +236,31 @@ impl DatabaseStore for PostgresStore {
     }
 
     async fn delete_database(&self, id: &Id) -> Result<bool> {
-        let result = sqlx::query!("DELETE FROM databases WHERE id = $1", id)
+        // Delete from the databases table
+        sqlx::query!("DELETE FROM databases WHERE id = $1", id)
             .execute(&self.pool)
             .await
             .context("Failed to delete database")?;
 
-        Ok(result.rows_affected() > 0)
+        // Delete from branches table
+        sqlx::query!("DELETE FROM branches WHERE database_id = $1", id)
+            .execute(&self.pool)
+            .await
+            .context("Failed to delete branches")?;
+
+        // Delete from working-commits table
+        sqlx::query!("DELETE FROM working_commits WHERE database_id = $1", id)
+            .execute(&self.pool)
+            .await
+            .context("Failed to delete working commits")?;
+
+        // Delete from commits table
+        sqlx::query!("DELETE FROM commits WHERE database_id = $1", id)
+            .execute(&self.pool)
+            .await
+            .context("Failed to delete commits")?;
+
+        Ok(true)
     }
 }
 
@@ -486,8 +611,8 @@ impl crate::store::traits::CommitStore for PostgresStore {
             return Ok(None);
         };
 
-        Ok(Some(crate::model::Commit {
-            hash: row.hash,
+        let commit = crate::model::Commit {
+            hash: row.hash.clone(),
             database_id: row.database_id,
             parent_hash: row.parent_hash,
             author: row.author,
@@ -497,7 +622,9 @@ impl crate::store::traits::CommitStore for PostgresStore {
             data_size: row.data_size,
             schema_classes_count: row.schema_classes_count,
             instances_count: row.instances_count,
-        }))
+        };
+
+        Ok(Some(commit))
     }
 
     async fn list_commits_for_database(
@@ -598,10 +725,22 @@ impl crate::store::traits::CommitStore for PostgresStore {
     }
 
     async fn get_commit_data(&self, hash: &str) -> Result<Option<crate::model::CommitData>> {
+        // Try to get from cache first
+        if let Ok(mut cache) = self.commit_cache.lock() {
+            if let Some(commit) = cache.get(hash) {
+                return Ok(Some(commit));
+            }
+        }
         let commit = self.get_commit(hash).await?;
         match commit {
             Some(commit) => match commit.get_data() {
-                Ok(data) => Ok(Some(data)),
+                Ok(data) => {
+                    // Store in cache for future use
+                    if let Ok(mut cache) = self.commit_cache.lock() {
+                        cache.insert(hash.to_string(), data.clone());
+                    }
+                    Ok(Some(data))
+                }
                 Err(e) => Err(anyhow::anyhow!("Failed to decompress commit data: {}", e)),
             },
             None => Ok(None),
@@ -654,9 +793,12 @@ impl crate::store::traits::WorkingCommitStore for PostgresStore {
         schema_data.normalize();
 
         let status = Self::parse_working_commit_status(&row.status);
-        
+
         let merge_state = if let Some(merge_state_json) = row.merge_state {
-            Some(serde_json::from_value::<crate::model::merge::MergeState>(merge_state_json).context("Failed to deserialize merge_state")?)
+            Some(
+                serde_json::from_value::<crate::model::merge::MergeState>(merge_state_json)
+                    .context("Failed to deserialize merge_state")?,
+            )
         } else {
             None
         };
@@ -700,7 +842,7 @@ impl crate::store::traits::WorkingCommitStore for PostgresStore {
         for row in rows {
             let mut schema_data: crate::model::Schema = serde_json::from_value(row.schema_data)
                 .context("Failed to deserialize schema data")?;
-            
+
             // Normalize the schema to ensure all PropertyDef instances have the value field
             schema_data.normalize();
             let instances_data: Vec<crate::model::Instance> =
@@ -708,10 +850,12 @@ impl crate::store::traits::WorkingCommitStore for PostgresStore {
                     .context("Failed to deserialize instances data")?;
 
             let status = Self::parse_working_commit_status(&row.status);
-            
+
             let merge_state = if let Some(merge_state_json) = row.merge_state {
-                Some(serde_json::from_value::<crate::model::merge::MergeState>(merge_state_json)
-                    .context("Failed to deserialize merge_state")?)
+                Some(
+                    serde_json::from_value::<crate::model::merge::MergeState>(merge_state_json)
+                        .context("Failed to deserialize merge_state")?,
+                )
             } else {
                 None
             };
@@ -782,7 +926,7 @@ impl crate::store::traits::WorkingCommitStore for PostgresStore {
         let instances_json = serde_json::to_value(&working_commit.instances_data)
             .context("Failed to serialize instances data")?;
         let status_str = Self::working_commit_status_to_string(&working_commit.status);
-        
+
         let merge_state_json = if let Some(merge_state) = &working_commit.merge_state {
             Some(serde_json::to_value(merge_state).context("Failed to serialize merge_state")?)
         } else {
@@ -838,7 +982,7 @@ impl crate::store::traits::WorkingCommitStore for PostgresStore {
             crate::model::WorkingCommitStatus::Merging => "merging",
             crate::model::WorkingCommitStatus::Rebasing => "rebasing",
         };
-        
+
         let merge_state_json = if let Some(merge_state) = &working_commit.merge_state {
             Some(serde_json::to_value(merge_state).context("Failed to serialize merge_state")?)
         } else {
@@ -904,7 +1048,7 @@ impl crate::store::traits::WorkingCommitStore for PostgresStore {
         .execute(&self.pool)
         .await
         .context("Failed to cleanup duplicate active working commits")?;
-        
+
         let row = sqlx::query!(
             r#"
             SELECT id, database_id, branch_name, based_on_hash, author, created_at, updated_at,
@@ -935,9 +1079,12 @@ impl crate::store::traits::WorkingCommitStore for PostgresStore {
         schema_data.normalize();
 
         let status = Self::parse_working_commit_status(&row.status);
-        
+
         let merge_state = if let Some(merge_state_json) = row.merge_state {
-            Some(serde_json::from_value::<crate::model::merge::MergeState>(merge_state_json).context("Failed to deserialize merge_state")?)
+            Some(
+                serde_json::from_value::<crate::model::merge::MergeState>(merge_state_json)
+                    .context("Failed to deserialize merge_state")?,
+            )
         } else {
             None
         };

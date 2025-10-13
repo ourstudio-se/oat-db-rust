@@ -5,6 +5,7 @@ use crate::model::{
     RelationshipSelection, Schema, SelectionSpec, SolveMetadata, SolveStatistics, SolverInfo,
 };
 use anyhow::Result;
+use itertools::Itertools;
 use pldag::Pldag;
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::hash::{DefaultHasher, Hash, Hasher};
@@ -510,13 +511,16 @@ impl<'a> SolvePipeline<'a> {
                 let concatenated = values
                     .into_iter()
                     .filter_map(|v| match v {
-                        serde_json::Value::String(s) => Some(s),
+                        serde_json::Value::String(s) if !s.is_empty() => Some(s),
+                        serde_json::Value::String(_) => None, // Filter out empty strings
                         serde_json::Value::Number(n) => Some(n.to_string()),
                         serde_json::Value::Bool(b) => Some(b.to_string()),
                         serde_json::Value::Null => None, // Filter out null values
                         _ => Some(serde_json::to_string(&v).unwrap_or_default()),
                     })
                     .collect::<Vec<String>>()
+                    .iter()
+                    .sorted_by(|a, b| a.cmp(b)) // Sort alphabetically
                     .join(separator);
 
                 return Some(serde_json::Value::String(concatenated));

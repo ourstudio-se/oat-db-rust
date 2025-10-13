@@ -6749,78 +6749,6 @@ pub async fn delete_database<S: Store>(
         }
     }
 
-    // Check for active branches (besides main)
-    match store.list_branches_for_database(&db_id).await {
-        Ok(branches) => {
-            // Check if there are branches other than main
-            if branches.len() > 1 {
-                return Err((
-                    StatusCode::CONFLICT,
-                    Json(ErrorResponse::new("Cannot delete database: contains active branches besides main. Delete all feature branches first.")),
-                ));
-            }
-        }
-        Err(e) => {
-            return Err((
-                StatusCode::INTERNAL_SERVER_ERROR,
-                Json(ErrorResponse::new(&format!(
-                    "Failed to check branches: {}",
-                    e
-                ))),
-            ))
-        }
-    }
-
-    // Check for existing commits
-    match store.list_commits_for_database(&db_id, None).await {
-        Ok(commits) => {
-            if !commits.is_empty() {
-                return Err((
-                    StatusCode::CONFLICT,
-                    Json(ErrorResponse::new("Cannot delete database: contains commit history. This operation would cause data loss.")),
-                ));
-            }
-        }
-        Err(e) => {
-            return Err((
-                StatusCode::INTERNAL_SERVER_ERROR,
-                Json(ErrorResponse::new(&format!(
-                    "Failed to check commits: {}",
-                    e
-                ))),
-            ))
-        }
-    }
-
-    // Check for active working commits
-    if let Ok(branches) = store.list_branches_for_database(&db_id).await {
-        for branch in branches {
-            match store
-                .get_active_working_commit_for_branch(&db_id, &branch.name)
-                .await
-            {
-                Ok(Some(_)) => {
-                    return Err((
-                        StatusCode::CONFLICT,
-                        Json(ErrorResponse::new(&format!("Cannot delete database: has active working commit on branch '{}'. Commit or abandon working changes first.", branch.name))),
-                    ));
-                }
-                Ok(None) => {
-                    // No active working commit for this branch, continue
-                }
-                Err(e) => {
-                    return Err((
-                        StatusCode::INTERNAL_SERVER_ERROR,
-                        Json(ErrorResponse::new(&format!(
-                            "Failed to check working commits: {}",
-                            e
-                        ))),
-                    ))
-                }
-            }
-        }
-    }
-
     // All validations passed, proceed with deletion
     match store.delete_database(&db_id).await {
         Ok(true) => Ok(Json(serde_json::json!({
@@ -8461,16 +8389,8 @@ async fn batch_query_instance_configuration_impl<S: Store>(
         .collect();
 
     // Resolve commit data from commit hash
-    let commit = match store.get_commit(commit_hash.as_str()).await {
-        Ok(Some(commit)) => match commit.get_data() {
-            Ok(data) => data,
-            Err(e) => {
-                return Err((
-                    StatusCode::INTERNAL_SERVER_ERROR,
-                    Json(ErrorResponse::new(&e.to_string())),
-                ));
-            }
-        },
+    let commit: CommitData = match store.get_commit_data(commit_hash.as_str()).await {
+        Ok(Some(commit_data)) => commit_data,
         Ok(None) => {
             return Err((
                 StatusCode::NOT_FOUND,

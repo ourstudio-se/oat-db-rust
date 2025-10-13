@@ -390,23 +390,25 @@ impl Expander {
         // Get instances from ONLY the specified branch - NEVER cross database boundaries!
 
         if let Some(types) = &filter.types {
-            let mut matching_instances = Vec::new();
-
-            // FIXED: Only query the specific branch, never cross databases
-            for instance_type in types {
-                let instances = other_instances
-                    .iter()
-                    .filter(|i| i.class_id == *instance_type)
-                    .cloned()
-                    .collect::<Vec<_>>();
-                matching_instances.extend(instances);
-            }
-
-            // Apply where_clause filters if present using our unified filtering system
-            if let Some(where_clause) = &filter.where_clause {
-                matching_instances =
-                    crate::logic::filter_instances(matching_instances, where_clause);
-            }
+            let mut matching_instances = other_instances
+                .iter()
+                .filter(|i| {
+                    let containes_type = types.contains(&i.class_id);
+                    if !containes_type {
+                        return false;
+                    }
+                    // If there's a where_clause, apply it
+                    if let Some(where_clause) = &filter.where_clause {
+                        return crate::logic::InstanceFilterEvaluator::evaluate_filter(
+                            i,
+                            where_clause,
+                        )
+                        .unwrap_or(false);
+                    }
+                    true
+                })
+                .cloned()
+                .collect::<Vec<_>>();
 
             // Apply sorting if present
             if let Some(sort_field) = &filter.sort {
