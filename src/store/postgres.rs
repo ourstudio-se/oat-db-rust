@@ -143,7 +143,7 @@ impl PostgresStore {
     /// This should be called on startup to warm up the cache
     pub async fn preload_working_commit_cache(&self) -> Result<usize> {
         // Fetch all active working commits from database
-        let rows = sqlx::query!(
+        let rows = sqlx::query(
             r#"
             SELECT id, database_id, branch_name, based_on_hash, author, created_at, updated_at,
                    schema_data, instances_data, status, merge_state
@@ -158,19 +158,23 @@ impl PostgresStore {
 
         let mut count = 0;
         for row in rows {
-            let mut schema_data: crate::model::Schema = serde_json::from_value(row.schema_data)
+            let schema_data_value: serde_json::Value = row.get("schema_data");
+            let mut schema_data: crate::model::Schema = serde_json::from_value(schema_data_value)
                 .context("Failed to deserialize schema data")?;
 
             // Normalize the schema to ensure all PropertyDef instances have the value field
             schema_data.normalize();
 
+            let instances_data_value: serde_json::Value = row.get("instances_data");
             let instances_data: Vec<crate::model::Instance> =
-                serde_json::from_value(row.instances_data)
+                serde_json::from_value(instances_data_value)
                     .context("Failed to deserialize instances data")?;
 
-            let status = Self::parse_working_commit_status(&row.status);
+            let status_str: String = row.get("status");
+            let status = Self::parse_working_commit_status(&status_str);
 
-            let merge_state = if let Some(merge_state_json) = row.merge_state {
+            let merge_state_value: Option<serde_json::Value> = row.get("merge_state");
+            let merge_state = if let Some(merge_state_json) = merge_state_value {
                 Some(
                     serde_json::from_value::<crate::model::merge::MergeState>(merge_state_json)
                         .context("Failed to deserialize merge_state")?,
@@ -179,14 +183,19 @@ impl PostgresStore {
                 None
             };
 
+            let based_on_hash_opt: Option<String> = row.get("based_on_hash");
             let working_commit = crate::model::WorkingCommit {
-                id: row.id,
-                database_id: row.database_id,
-                branch_name: row.branch_name,
-                based_on_hash: row.based_on_hash.unwrap_or_else(String::new),
-                author: row.author,
-                created_at: row.created_at.to_rfc3339(),
-                updated_at: row.updated_at.to_rfc3339(),
+                id: row.get("id"),
+                database_id: row.get("database_id"),
+                branch_name: row.get("branch_name"),
+                based_on_hash: based_on_hash_opt.unwrap_or_else(String::new),
+                author: row.get("author"),
+                created_at: row
+                    .get::<chrono::DateTime<chrono::Utc>, _>("created_at")
+                    .to_rfc3339(),
+                updated_at: row
+                    .get::<chrono::DateTime<chrono::Utc>, _>("updated_at")
+                    .to_rfc3339(),
                 schema_data,
                 instances_data,
                 status,
@@ -283,7 +292,7 @@ impl DatabaseStore for PostgresStore {
     }
 
     async fn upsert_database(&self, database: Database) -> Result<()> {
-        sqlx::query!(
+        sqlx::query(
             r#"
             INSERT INTO databases (id, name, description, created_at, default_branch_name)
             VALUES ($1, $2, $3, $4, $5)
@@ -292,13 +301,13 @@ impl DatabaseStore for PostgresStore {
                 description = EXCLUDED.description,
                 default_branch_name = EXCLUDED.default_branch_name,
                 updated_at = NOW()
-            "#,
-            database.id,
-            database.name,
-            database.description,
-            database.created_at,
-            database.default_branch_name
+            "#
         )
+        .bind(&database.id)
+        .bind(&database.name)
+        .bind(&database.description)
+        .bind(&database.created_at)
+        .bind(&database.default_branch_name)
         .execute(&self.pool)
         .await
         .context("Failed to upsert database")?;
@@ -308,25 +317,29 @@ impl DatabaseStore for PostgresStore {
 
     async fn delete_database(&self, id: &Id) -> Result<bool> {
         // Delete from the databases table
-        sqlx::query!("DELETE FROM databases WHERE id = $1", id)
+        sqlx::query("DELETE FROM databases WHERE id = $1")
+            .bind(id)
             .execute(&self.pool)
             .await
             .context("Failed to delete database")?;
 
         // Delete from branches table
-        sqlx::query!("DELETE FROM branches WHERE database_id = $1", id)
+        sqlx::query("DELETE FROM branches WHERE database_id = $1")
+            .bind(id)
             .execute(&self.pool)
             .await
             .context("Failed to delete branches")?;
 
         // Delete from working-commits table
-        sqlx::query!("DELETE FROM working_commits WHERE database_id = $1", id)
+        sqlx::query("DELETE FROM working_commits WHERE database_id = $1")
+            .bind(id)
             .execute(&self.pool)
             .await
             .context("Failed to delete working commits")?;
 
         // Delete from commits table
-        sqlx::query!("DELETE FROM commits WHERE database_id = $1", id)
+        sqlx::query("DELETE FROM commits WHERE database_id = $1")
+            .bind(id)
             .execute(&self.pool)
             .await
             .context("Failed to delete commits")?;
@@ -338,15 +351,15 @@ impl DatabaseStore for PostgresStore {
 #[async_trait::async_trait]
 impl BranchStore for PostgresStore {
     async fn get_branch(&self, database_id: &Id, name: &str) -> Result<Option<Branch>> {
-        let row = sqlx::query!(
+        let row = sqlx::query(
             r#"
             SELECT database_id, name, description, parent_branch_name, created_at, current_commit_hash, commit_message, author, status
-            FROM branches 
+            FROM branches
             WHERE database_id = $1 AND name = $2
-            "#,
-            database_id,
-            name
+            "#
         )
+        .bind(database_id)
+        .bind(name)
         .fetch_optional(&self.pool)
         .await
         .context("Failed to fetch branch")?;
@@ -355,7 +368,8 @@ impl BranchStore for PostgresStore {
             return Ok(None);
         };
 
-        let status = match row.status.as_str() {
+        let status_str: String = row.get("status");
+        let status = match status_str.as_str() {
             "active" => crate::model::BranchStatus::Active,
             "merged" => crate::model::BranchStatus::Merged,
             "archived" => crate::model::BranchStatus::Archived,
@@ -363,28 +377,28 @@ impl BranchStore for PostgresStore {
         };
 
         Ok(Some(Branch {
-            database_id: row.database_id,
-            name: row.name,
-            description: row.description,
-            parent_branch_name: row.parent_branch_name,
-            created_at: row.created_at,
-            current_commit_hash: row.current_commit_hash,
-            commit_message: row.commit_message,
-            author: row.author,
+            database_id: row.get("database_id"),
+            name: row.get("name"),
+            description: row.get("description"),
+            parent_branch_name: row.get("parent_branch_name"),
+            created_at: row.get("created_at"),
+            current_commit_hash: row.get("current_commit_hash"),
+            commit_message: row.get("commit_message"),
+            author: row.get("author"),
             status,
         }))
     }
 
     async fn list_branches_for_database(&self, database_id: &Id) -> Result<Vec<Branch>> {
-        let rows = sqlx::query!(
+        let rows = sqlx::query(
             r#"
             SELECT database_id, name, description, parent_branch_name, created_at, current_commit_hash, commit_message, author, status
-            FROM branches 
+            FROM branches
             WHERE database_id = $1
             ORDER BY created_at
-            "#,
-            database_id
+            "#
         )
+        .bind(database_id)
         .fetch_all(&self.pool)
         .await
         .context("Failed to list branches")?;
@@ -392,7 +406,8 @@ impl BranchStore for PostgresStore {
         let branches = rows
             .into_iter()
             .map(|row| {
-                let status = match row.status.as_str() {
+                let status_str: String = row.get("status");
+                let status = match status_str.as_str() {
                     "active" => crate::model::BranchStatus::Active,
                     "merged" => crate::model::BranchStatus::Merged,
                     "archived" => crate::model::BranchStatus::Archived,
@@ -400,14 +415,14 @@ impl BranchStore for PostgresStore {
                 };
 
                 Branch {
-                    database_id: row.database_id,
-                    name: row.name,
-                    description: row.description,
-                    parent_branch_name: row.parent_branch_name,
-                    created_at: row.created_at,
-                    current_commit_hash: row.current_commit_hash,
-                    commit_message: row.commit_message,
-                    author: row.author,
+                    database_id: row.get("database_id"),
+                    name: row.get("name"),
+                    description: row.get("description"),
+                    parent_branch_name: row.get("parent_branch_name"),
+                    created_at: row.get("created_at"),
+                    current_commit_hash: row.get("current_commit_hash"),
+                    commit_message: row.get("commit_message"),
+                    author: row.get("author"),
                     status,
                 }
             })
@@ -423,7 +438,7 @@ impl BranchStore for PostgresStore {
             crate::model::BranchStatus::Archived => "archived",
         };
 
-        sqlx::query!(
+        sqlx::query(
             r#"
             INSERT INTO branches (database_id, name, description, parent_branch_name, created_at, current_commit_hash, commit_message, author, status)
             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
@@ -435,17 +450,17 @@ impl BranchStore for PostgresStore {
                 author = EXCLUDED.author,
                 status = EXCLUDED.status,
                 updated_at = NOW()
-            "#,
-            branch.database_id,
-            branch.name,
-            branch.description,
-            branch.parent_branch_name,
-            branch.created_at,
-            branch.current_commit_hash,
-            branch.commit_message,
-            branch.author,
-            status_str
+            "#
         )
+        .bind(&branch.database_id)
+        .bind(&branch.name)
+        .bind(&branch.description)
+        .bind(&branch.parent_branch_name)
+        .bind(&branch.created_at)
+        .bind(&branch.current_commit_hash)
+        .bind(&branch.commit_message)
+        .bind(&branch.author)
+        .bind(status_str)
         .execute(&self.pool)
         .await
         .context("Failed to upsert branch")?;
@@ -454,11 +469,11 @@ impl BranchStore for PostgresStore {
     }
 
     async fn delete_branch(&self, database_id: &Id, name: &str) -> Result<bool> {
-        let result = sqlx::query!(
-            "DELETE FROM branches WHERE database_id = $1 AND name = $2",
-            database_id,
-            name
+        let result = sqlx::query(
+            "DELETE FROM branches WHERE database_id = $1 AND name = $2"
         )
+        .bind(database_id)
+        .bind(name)
         .execute(&self.pool)
         .await
         .context("Failed to delete branch")?;
@@ -665,15 +680,15 @@ impl PostgresStore {
 #[async_trait::async_trait]
 impl crate::store::traits::CommitStore for PostgresStore {
     async fn get_commit(&self, hash: &str) -> Result<Option<crate::model::Commit>> {
-        let row = sqlx::query!(
+        let row = sqlx::query(
             r#"
-            SELECT hash, database_id, parent_hash, author, message, created_at, 
+            SELECT hash, database_id, parent_hash, author, message, created_at,
                    data, data_size, schema_classes_count, instances_count
-            FROM commits 
+            FROM commits
             WHERE hash = $1
-            "#,
-            hash
+            "#
         )
+        .bind(hash)
         .fetch_optional(&self.pool)
         .await
         .context("Failed to fetch commit")?;
@@ -683,16 +698,18 @@ impl crate::store::traits::CommitStore for PostgresStore {
         };
 
         let commit = crate::model::Commit {
-            hash: row.hash.clone(),
-            database_id: row.database_id,
-            parent_hash: row.parent_hash,
-            author: row.author,
-            message: row.message,
-            created_at: row.created_at.to_rfc3339(),
-            data: row.data,
-            data_size: row.data_size,
-            schema_classes_count: row.schema_classes_count,
-            instances_count: row.instances_count,
+            hash: row.get("hash"),
+            database_id: row.get("database_id"),
+            parent_hash: row.get("parent_hash"),
+            author: row.get("author"),
+            message: row.get("message"),
+            created_at: row
+                .get::<chrono::DateTime<chrono::Utc>, _>("created_at")
+                .to_rfc3339(),
+            data: row.get("data"),
+            data_size: row.get("data_size"),
+            schema_classes_count: row.get("schema_classes_count"),
+            instances_count: row.get("instances_count"),
         };
 
         Ok(Some(commit))
@@ -769,25 +786,27 @@ impl crate::store::traits::CommitStore for PostgresStore {
         let commit = working_commit.to_commit(new_commit.message);
 
         // Store the commit in database
-        sqlx::query!(
+        sqlx::query(
             r#"
-            INSERT INTO commits (hash, database_id, parent_hash, author, message, created_at, 
+            INSERT INTO commits (hash, database_id, parent_hash, author, message, created_at,
                                data, data_size, schema_classes_count, instances_count)
             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
-            "#,
-            commit.hash,
-            commit.database_id,
-            commit.parent_hash,
-            commit.author,
-            commit.message,
+            "#
+        )
+        .bind(&commit.hash)
+        .bind(&commit.database_id)
+        .bind(&commit.parent_hash)
+        .bind(&commit.author)
+        .bind(&commit.message)
+        .bind(
             chrono::DateTime::parse_from_rfc3339(&commit.created_at)
                 .context("Failed to parse commit created_at")?
-                .with_timezone(&chrono::Utc),
-            commit.data,
-            commit.data_size,
-            commit.schema_classes_count,
-            commit.instances_count
+                .with_timezone(&chrono::Utc)
         )
+        .bind(&commit.data)
+        .bind(commit.data_size)
+        .bind(commit.schema_classes_count)
+        .bind(commit.instances_count)
         .execute(&self.pool)
         .await
         .context("Failed to create commit")?;
@@ -819,12 +838,13 @@ impl crate::store::traits::CommitStore for PostgresStore {
     }
 
     async fn commit_exists(&self, hash: &str) -> Result<bool> {
-        let count = sqlx::query_scalar!("SELECT COUNT(*) FROM commits WHERE hash = $1", hash)
+        let count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM commits WHERE hash = $1")
+            .bind(hash)
             .fetch_one(&self.pool)
             .await
             .context("Failed to check commit existence")?;
 
-        Ok(count.unwrap_or(0) > 0)
+        Ok(count > 0)
     }
 }
 
@@ -840,15 +860,15 @@ impl crate::store::traits::WorkingCommitStore for PostgresStore {
         }
 
         // Cache miss - fetch from database
-        let row = sqlx::query!(
+        let row = sqlx::query(
             r#"
             SELECT id, database_id, branch_name, based_on_hash, author, created_at, updated_at,
                    schema_data, instances_data, status, merge_state
             FROM working_commits
             WHERE id = $1
-            "#,
-            id
+            "#
         )
+        .bind(id)
         .fetch_optional(&self.pool)
         .await
         .context("Failed to fetch working commit")?;
@@ -857,18 +877,23 @@ impl crate::store::traits::WorkingCommitStore for PostgresStore {
             return Ok(None);
         };
 
+        let schema_data_value: serde_json::Value = row.get("schema_data");
         let mut schema_data: crate::model::Schema =
-            serde_json::from_value(row.schema_data).context("Failed to deserialize schema data")?;
+            serde_json::from_value(schema_data_value).context("Failed to deserialize schema data")?;
+
+        let instances_data_value: serde_json::Value = row.get("instances_data");
         let instances_data: Vec<crate::model::Instance> =
-            serde_json::from_value(row.instances_data)
+            serde_json::from_value(instances_data_value)
                 .context("Failed to deserialize instances data")?;
 
         // Normalize the schema to ensure all PropertyDef instances have the value field
         schema_data.normalize();
 
-        let status = Self::parse_working_commit_status(&row.status);
+        let status_str: String = row.get("status");
+        let status = Self::parse_working_commit_status(&status_str);
 
-        let merge_state = if let Some(merge_state_json) = row.merge_state {
+        let merge_state_value: Option<serde_json::Value> = row.get("merge_state");
+        let merge_state = if let Some(merge_state_json) = merge_state_value {
             Some(
                 serde_json::from_value::<crate::model::merge::MergeState>(merge_state_json)
                     .context("Failed to deserialize merge_state")?,
@@ -877,14 +902,19 @@ impl crate::store::traits::WorkingCommitStore for PostgresStore {
             None
         };
 
+        let based_on_hash_opt: Option<String> = row.get("based_on_hash");
         let working_commit = crate::model::WorkingCommit {
-            id: row.id,
-            database_id: row.database_id,
-            branch_name: row.branch_name,
-            based_on_hash: row.based_on_hash.unwrap_or_else(String::new),
-            author: row.author,
-            created_at: row.created_at.to_rfc3339(),
-            updated_at: row.updated_at.to_rfc3339(),
+            id: row.get("id"),
+            database_id: row.get("database_id"),
+            branch_name: row.get("branch_name"),
+            based_on_hash: based_on_hash_opt.unwrap_or_else(String::new),
+            author: row.get("author"),
+            created_at: row
+                .get::<chrono::DateTime<chrono::Utc>, _>("created_at")
+                .to_rfc3339(),
+            updated_at: row
+                .get::<chrono::DateTime<chrono::Utc>, _>("updated_at")
+                .to_rfc3339(),
             schema_data,
             instances_data,
             status,
@@ -902,35 +932,40 @@ impl crate::store::traits::WorkingCommitStore for PostgresStore {
         database_id: &crate::model::Id,
         branch_name: &str,
     ) -> Result<Vec<crate::model::WorkingCommit>> {
-        let rows = sqlx::query!(
+        let rows = sqlx::query(
             r#"
             SELECT id, database_id, branch_name, based_on_hash, author, created_at, updated_at,
                    schema_data, instances_data, status, merge_state
-            FROM working_commits 
+            FROM working_commits
             WHERE database_id = $1 AND branch_name = $2
             ORDER BY updated_at DESC
-            "#,
-            database_id,
-            branch_name
+            "#
         )
+        .bind(database_id)
+        .bind(branch_name)
         .fetch_all(&self.pool)
         .await
         .context("Failed to list working commits")?;
 
         let mut working_commits = Vec::new();
         for row in rows {
-            let mut schema_data: crate::model::Schema = serde_json::from_value(row.schema_data)
+            let schema_data_value: serde_json::Value = row.get("schema_data");
+            let mut schema_data: crate::model::Schema = serde_json::from_value(schema_data_value)
                 .context("Failed to deserialize schema data")?;
 
             // Normalize the schema to ensure all PropertyDef instances have the value field
             schema_data.normalize();
+
+            let instances_data_value: serde_json::Value = row.get("instances_data");
             let instances_data: Vec<crate::model::Instance> =
-                serde_json::from_value(row.instances_data)
+                serde_json::from_value(instances_data_value)
                     .context("Failed to deserialize instances data")?;
 
-            let status = Self::parse_working_commit_status(&row.status);
+            let status_str: String = row.get("status");
+            let status = Self::parse_working_commit_status(&status_str);
 
-            let merge_state = if let Some(merge_state_json) = row.merge_state {
+            let merge_state_value: Option<serde_json::Value> = row.get("merge_state");
+            let merge_state = if let Some(merge_state_json) = merge_state_value {
                 Some(
                     serde_json::from_value::<crate::model::merge::MergeState>(merge_state_json)
                         .context("Failed to deserialize merge_state")?,
@@ -939,14 +974,19 @@ impl crate::store::traits::WorkingCommitStore for PostgresStore {
                 None
             };
 
+            let based_on_hash_opt: Option<String> = row.get("based_on_hash");
             working_commits.push(crate::model::WorkingCommit {
-                id: row.id,
-                database_id: row.database_id,
-                branch_name: row.branch_name,
-                based_on_hash: row.based_on_hash.unwrap_or_else(String::new),
-                author: row.author,
-                created_at: row.created_at.to_rfc3339(),
-                updated_at: row.updated_at.to_rfc3339(),
+                id: row.get("id"),
+                database_id: row.get("database_id"),
+                branch_name: row.get("branch_name"),
+                based_on_hash: based_on_hash_opt.unwrap_or_else(String::new),
+                author: row.get("author"),
+                created_at: row
+                    .get::<chrono::DateTime<chrono::Utc>, _>("created_at")
+                    .to_rfc3339(),
+                updated_at: row
+                    .get::<chrono::DateTime<chrono::Utc>, _>("updated_at")
+                    .to_rfc3339(),
                 schema_data,
                 instances_data,
                 status,
@@ -1012,28 +1052,32 @@ impl crate::store::traits::WorkingCommitStore for PostgresStore {
             None
         };
 
-        sqlx::query!(
+        sqlx::query(
             r#"
             INSERT INTO working_commits (id, database_id, branch_name, based_on_hash, author,
                                        created_at, updated_at, schema_data, instances_data, status, merge_state)
             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
-            "#,
-            working_commit.id,
-            working_commit.database_id,
-            working_commit.branch_name,
-            if working_commit.based_on_hash.is_empty() { None } else { Some(working_commit.based_on_hash.as_str()) },
-            working_commit.author,
+            "#
+        )
+        .bind(&working_commit.id)
+        .bind(&working_commit.database_id)
+        .bind(&working_commit.branch_name)
+        .bind(if working_commit.based_on_hash.is_empty() { None } else { Some(working_commit.based_on_hash.as_str()) })
+        .bind(&working_commit.author)
+        .bind(
             chrono::DateTime::parse_from_rfc3339(&working_commit.created_at)
                 .context("Failed to parse working commit created_at")?
-                .with_timezone(&chrono::Utc),
+                .with_timezone(&chrono::Utc)
+        )
+        .bind(
             chrono::DateTime::parse_from_rfc3339(&working_commit.updated_at)
                 .context("Failed to parse working commit updated_at")?
-                .with_timezone(&chrono::Utc),
-            schema_json,
-            instances_json,
-            status_str,
-            merge_state_json
+                .with_timezone(&chrono::Utc)
         )
+        .bind(schema_json)
+        .bind(instances_json)
+        .bind(status_str)
+        .bind(merge_state_json)
         .execute(&self.pool)
         .await
         .context("Failed to create working commit")?;
@@ -1079,21 +1123,23 @@ impl crate::store::traits::WorkingCommitStore for PostgresStore {
                 None
             };
 
-            sqlx::query!(
+            sqlx::query(
                 r#"
                 UPDATE working_commits
                 SET schema_data = $2, instances_data = $3, status = $4, updated_at = $5, merge_state = $6
                 WHERE id = $1
-                "#,
-                dirty_working_commit.id,
-                schema_json,
-                instances_json,
-                status_str,
+                "#
+            )
+            .bind(&dirty_working_commit.id)
+            .bind(schema_json)
+            .bind(instances_json)
+            .bind(status_str)
+            .bind(
                 chrono::DateTime::parse_from_rfc3339(&dirty_working_commit.updated_at)
                     .context("Failed to parse working commit updated_at")?
-                    .with_timezone(&chrono::Utc),
-                merge_state_json
+                    .with_timezone(&chrono::Utc)
             )
+            .bind(merge_state_json)
             .execute(&self.pool)
             .await
             .context("Failed to update working commit")?;
@@ -1124,21 +1170,23 @@ impl crate::store::traits::WorkingCommitStore for PostgresStore {
                     None
                 };
 
-                sqlx::query!(
+                sqlx::query(
                     r#"
                     UPDATE working_commits
                     SET schema_data = $2, instances_data = $3, status = $4, updated_at = $5, merge_state = $6
                     WHERE id = $1
-                    "#,
-                    dirty_working_commit.id,
-                    schema_json,
-                    instances_json,
-                    status_str,
+                    "#
+                )
+                .bind(&dirty_working_commit.id)
+                .bind(schema_json)
+                .bind(instances_json)
+                .bind(status_str)
+                .bind(
                     chrono::DateTime::parse_from_rfc3339(&dirty_working_commit.updated_at)
                         .context("Failed to parse working commit updated_at")?
-                        .with_timezone(&chrono::Utc),
-                    merge_state_json
+                        .with_timezone(&chrono::Utc)
                 )
+                .bind(merge_state_json)
                 .execute(&self.pool)
                 .await
                 .context("Failed to update working commit before deletion")?;
@@ -1147,7 +1195,8 @@ impl crate::store::traits::WorkingCommitStore for PostgresStore {
         }
 
         // Now delete from database
-        let result = sqlx::query!("DELETE FROM working_commits WHERE id = $1", id)
+        let result = sqlx::query("DELETE FROM working_commits WHERE id = $1")
+            .bind(id)
             .execute(&self.pool)
             .await
             .context("Failed to delete working commit")?;
@@ -1178,21 +1227,23 @@ impl crate::store::traits::WorkingCommitStore for PostgresStore {
             None
         };
 
-        sqlx::query!(
+        sqlx::query(
             r#"
             UPDATE working_commits
             SET schema_data = $2, instances_data = $3, status = $4, updated_at = $5, merge_state = $6
             WHERE id = $1
-            "#,
-            working_commit.id,
-            schema_json,
-            instances_json,
-            status_str,
+            "#
+        )
+        .bind(&working_commit.id)
+        .bind(schema_json)
+        .bind(instances_json)
+        .bind(status_str)
+        .bind(
             chrono::DateTime::parse_from_rfc3339(&working_commit.updated_at)
                 .context("Failed to parse working commit updated_at")?
-                .with_timezone(&chrono::Utc),
-            merge_state_json
+                .with_timezone(&chrono::Utc)
         )
+        .bind(merge_state_json)
         .execute(&self.pool)
         .await
         .context("Failed to persist working commit")?;
@@ -1217,7 +1268,7 @@ impl crate::store::traits::WorkingCommitStore for PostgresStore {
 
         // Cache miss - fetch from database
         // First clean up any duplicate active working commits
-        sqlx::query!(
+        sqlx::query(
             r#"
             WITH latest AS (
                 SELECT id FROM working_commits
@@ -1231,15 +1282,15 @@ impl crate::store::traits::WorkingCommitStore for PostgresStore {
               AND branch_name = $2
               AND status = 'active'
               AND id NOT IN (SELECT id FROM latest)
-            "#,
-            database_id,
-            branch_name
+            "#
         )
+        .bind(database_id)
+        .bind(branch_name)
         .execute(&self.pool)
         .await
         .context("Failed to cleanup duplicate active working commits")?;
 
-        let row = sqlx::query!(
+        let row = sqlx::query(
             r#"
             SELECT id, database_id, branch_name, based_on_hash, author, created_at, updated_at,
                    schema_data, instances_data, status, merge_state
@@ -1247,10 +1298,10 @@ impl crate::store::traits::WorkingCommitStore for PostgresStore {
             WHERE database_id = $1 AND branch_name = $2 AND status = 'active'
             ORDER BY updated_at DESC
             LIMIT 1
-            "#,
-            database_id,
-            branch_name
+            "#
         )
+        .bind(database_id)
+        .bind(branch_name)
         .fetch_optional(&self.pool)
         .await
         .context("Failed to fetch active working commit")?;
@@ -1259,18 +1310,23 @@ impl crate::store::traits::WorkingCommitStore for PostgresStore {
             return Ok(None);
         };
 
+        let schema_data_value: serde_json::Value = row.get("schema_data");
         let mut schema_data: crate::model::Schema =
-            serde_json::from_value(row.schema_data).context("Failed to deserialize schema data")?;
+            serde_json::from_value(schema_data_value).context("Failed to deserialize schema data")?;
+
+        let instances_data_value: serde_json::Value = row.get("instances_data");
         let instances_data: Vec<crate::model::Instance> =
-            serde_json::from_value(row.instances_data)
+            serde_json::from_value(instances_data_value)
                 .context("Failed to deserialize instances data")?;
 
         // Normalize the schema to ensure all PropertyDef instances have the value field
         schema_data.normalize();
 
-        let status = Self::parse_working_commit_status(&row.status);
+        let status_str: String = row.get("status");
+        let status = Self::parse_working_commit_status(&status_str);
 
-        let merge_state = if let Some(merge_state_json) = row.merge_state {
+        let merge_state_value: Option<serde_json::Value> = row.get("merge_state");
+        let merge_state = if let Some(merge_state_json) = merge_state_value {
             Some(
                 serde_json::from_value::<crate::model::merge::MergeState>(merge_state_json)
                     .context("Failed to deserialize merge_state")?,
@@ -1279,14 +1335,19 @@ impl crate::store::traits::WorkingCommitStore for PostgresStore {
             None
         };
 
+        let based_on_hash_opt: Option<String> = row.get("based_on_hash");
         let working_commit = crate::model::WorkingCommit {
-            id: row.id,
-            database_id: row.database_id,
-            branch_name: row.branch_name,
-            based_on_hash: row.based_on_hash.unwrap_or_else(String::new),
-            author: row.author,
-            created_at: row.created_at.to_rfc3339(),
-            updated_at: row.updated_at.to_rfc3339(),
+            id: row.get("id"),
+            database_id: row.get("database_id"),
+            branch_name: row.get("branch_name"),
+            based_on_hash: based_on_hash_opt.unwrap_or_else(String::new),
+            author: row.get("author"),
+            created_at: row
+                .get::<chrono::DateTime<chrono::Utc>, _>("created_at")
+                .to_rfc3339(),
+            updated_at: row
+                .get::<chrono::DateTime<chrono::Utc>, _>("updated_at")
+                .to_rfc3339(),
             schema_data,
             instances_data,
             status,
@@ -1311,67 +1372,73 @@ impl crate::store::traits::TagStore for PostgresStore {
         let metadata_json =
             serde_json::to_value(&metadata).context("Failed to serialize metadata")?;
 
-        let row = sqlx::query!(
+        let row = sqlx::query(
             r#"
             INSERT INTO commit_tags (commit_hash, tag_type, tag_name, tag_description, created_by, metadata)
             VALUES ($1, $2, $3, $4, $5, $6)
             RETURNING id, created_at
-            "#,
-            tag.commit_hash,
-            tag.tag_type.to_string(),
-            tag.tag_name,
-            tag.tag_description,
-            tag.created_by,
-            metadata_json
+            "#
         )
+        .bind(&tag.commit_hash)
+        .bind(tag.tag_type.to_string())
+        .bind(&tag.tag_name)
+        .bind(&tag.tag_description)
+        .bind(&tag.created_by)
+        .bind(metadata_json)
         .fetch_one(&self.pool)
         .await
         .context("Failed to create commit tag")?;
 
         Ok(crate::model::CommitTag {
-            id: row.id,
+            id: row.get("id"),
             commit_hash: tag.commit_hash,
             tag_type: tag.tag_type,
             tag_name: tag.tag_name,
             tag_description: tag.tag_description,
-            created_at: row.created_at.to_rfc3339(),
+            created_at: row
+                .get::<chrono::DateTime<chrono::Utc>, _>("created_at")
+                .to_rfc3339(),
             created_by: tag.created_by,
             metadata,
         })
     }
 
     async fn get_commit_tags(&self, commit_hash: &str) -> Result<Vec<crate::model::CommitTag>> {
-        let rows = sqlx::query!(
+        let rows = sqlx::query(
             r#"
             SELECT id, commit_hash, tag_type, tag_name, tag_description, created_at, created_by, metadata
             FROM commit_tags
             WHERE commit_hash = $1
             ORDER BY created_at DESC
-            "#,
-            commit_hash
+            "#
         )
+        .bind(commit_hash)
         .fetch_all(&self.pool)
         .await
         .context("Failed to get commit tags")?;
 
         let mut tags = Vec::new();
         for row in rows {
-            let tag_type = row
-                .tag_type
+            let tag_type_str: String = row.get("tag_type");
+            let tag_type = tag_type_str
                 .parse()
                 .map_err(|e| anyhow::anyhow!("Invalid tag type: {}", e))?;
+
+            let metadata_value: Option<serde_json::Value> = row.get("metadata");
             let metadata =
-                serde_json::from_value(row.metadata.unwrap_or_else(|| serde_json::json!({})))
+                serde_json::from_value(metadata_value.unwrap_or_else(|| serde_json::json!({})))
                     .context("Failed to deserialize metadata")?;
 
             tags.push(crate::model::CommitTag {
-                id: row.id,
-                commit_hash: row.commit_hash,
+                id: row.get("id"),
+                commit_hash: row.get("commit_hash"),
                 tag_type,
-                tag_name: row.tag_name,
-                tag_description: row.tag_description,
-                created_at: row.created_at.to_rfc3339(),
-                created_by: row.created_by,
+                tag_name: row.get("tag_name"),
+                tag_description: row.get("tag_description"),
+                created_at: row
+                    .get::<chrono::DateTime<chrono::Utc>, _>("created_at")
+                    .to_rfc3339(),
+                created_by: row.get("created_by"),
                 metadata,
             });
         }
@@ -1380,7 +1447,8 @@ impl crate::store::traits::TagStore for PostgresStore {
     }
 
     async fn delete_commit_tag(&self, tag_id: i32) -> Result<bool> {
-        let result = sqlx::query!("DELETE FROM commit_tags WHERE id = $1", tag_id)
+        let result = sqlx::query("DELETE FROM commit_tags WHERE id = $1")
+            .bind(tag_id)
             .execute(&self.pool)
             .await
             .context("Failed to delete commit tag")?;
@@ -1402,14 +1470,14 @@ impl crate::store::traits::TagStore for PostgresStore {
         commit_hash: &str,
     ) -> Result<Option<crate::model::TaggedCommit>> {
         // Get the commit first
-        let commit_row = sqlx::query!(
+        let commit_row = sqlx::query(
             r#"
             SELECT hash, database_id, message, author, created_at
             FROM commits
             WHERE hash = $1
-            "#,
-            commit_hash
+            "#
         )
+        .bind(commit_hash)
         .fetch_optional(&self.pool)
         .await
         .context("Failed to get commit")?;
@@ -1422,11 +1490,13 @@ impl crate::store::traits::TagStore for PostgresStore {
         let tags = self.get_commit_tags(commit_hash).await?;
 
         Ok(Some(crate::model::TaggedCommit {
-            commit_hash: commit_row.hash,
-            database_id: commit_row.database_id,
-            commit_message: commit_row.message,
-            commit_author: commit_row.author,
-            commit_created_at: commit_row.created_at.to_rfc3339(),
+            commit_hash: commit_row.get("hash"),
+            database_id: commit_row.get("database_id"),
+            commit_message: commit_row.get("message"),
+            commit_author: commit_row.get("author"),
+            commit_created_at: commit_row
+                .get::<chrono::DateTime<chrono::Utc>, _>("created_at")
+                .to_rfc3339(),
             tags,
         }))
     }
@@ -1438,7 +1508,7 @@ impl crate::store::traits::TagStore for PostgresStore {
     ) -> Result<Vec<crate::model::TaggedCommit>> {
         let limit_value = limit.unwrap_or(50).min(100); // Default 50, max 100
 
-        let rows = sqlx::query!(
+        let rows = sqlx::query(
             r#"
             SELECT DISTINCT c.hash, c.database_id, c.message, c.author, c.created_at
             FROM commits c
@@ -1446,25 +1516,27 @@ impl crate::store::traits::TagStore for PostgresStore {
             WHERE c.database_id = $1
             ORDER BY c.created_at DESC
             LIMIT $2
-            "#,
-            database_id,
-            limit_value as i64
+            "#
         )
+        .bind(database_id)
+        .bind(limit_value as i64)
         .fetch_all(&self.pool)
         .await
         .context("Failed to list tagged commits")?;
 
         let mut tagged_commits = Vec::new();
         for row in rows {
-            let commit_hash = row.hash;
+            let commit_hash: String = row.get("hash");
             let tags = self.get_commit_tags(&commit_hash).await?;
 
             tagged_commits.push(crate::model::TaggedCommit {
                 commit_hash,
-                database_id: row.database_id,
-                commit_message: row.message,
-                commit_author: row.author,
-                commit_created_at: row.created_at.to_rfc3339(),
+                database_id: row.get("database_id"),
+                commit_message: row.get("message"),
+                commit_author: row.get("author"),
+                commit_created_at: row
+                    .get::<chrono::DateTime<chrono::Utc>, _>("created_at")
+                    .to_rfc3339(),
                 tags,
             });
         }
