@@ -464,17 +464,32 @@ impl<'a> SolvePipeline<'a> {
 
         for id in dependencies.iter() {
             if let Some(inst) = other_instances.iter().find(|inst| &inst.id == id) {
-                if let Some(prop_value) = inst.properties.get(fn_short.property.as_str()) {
-                    let value = match prop_value {
-                        crate::model::PropertyValue::Literal(typed_val) => typed_val.value.clone(),
-                        crate::model::PropertyValue::Conditional(rule_set) => {
-                            // For conditional properties, evaluate the rule
-                            use crate::logic::evaluate_simple::SimpleEvaluator;
-                            SimpleEvaluator::evaluate_rule_set(rule_set, inst)
+                if let Some(class_def) = self.commit_data.schema.get_class_by_id(&inst.class_id) {
+                    if let Some(prop_value) = inst.properties.get(fn_short.property.as_str()) {
+                        let value = match prop_value {
+                            crate::model::PropertyValue::Literal(typed_val) => {
+                                typed_val.value.clone()
+                            }
+                            crate::model::PropertyValue::Conditional(rule_set) => {
+                                // For conditional properties, evaluate the rule
+                                use crate::logic::evaluate_simple::SimpleEvaluator;
+                                SimpleEvaluator::evaluate_rule_set(rule_set, inst)
+                            }
+                        };
+                        if solution.get(&id.to_string()) >= Some(&1) {
+                            values.push(value.clone());
                         }
-                    };
-                    if solution.get(&id.to_string()) >= Some(&1) {
-                        values.push(value.clone());
+                    } else if let Some(default_prop) = class_def
+                        .properties
+                        .iter()
+                        .find(|p| p.name == fn_short.property)
+                    {
+                        // Return the default value if property is missing
+                        if let Some(default_value) = &default_prop.value {
+                            if solution.get(&id.to_string()) >= Some(&1) {
+                                values.push(default_value.clone());
+                            }
+                        }
                     }
                 }
             }
