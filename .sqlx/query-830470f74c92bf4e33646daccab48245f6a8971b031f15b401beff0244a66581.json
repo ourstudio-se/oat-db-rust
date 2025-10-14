@@ -1,6 +1,6 @@
 {
   "db_name": "PostgreSQL",
-  "query": "\n            SELECT id, database_id, branch_name, based_on_hash, author, created_at, updated_at,\n                   schema_data, instances_data, status, merge_state\n            FROM working_commits \n            WHERE id = $1\n            ",
+  "query": "\n            SELECT id, database_id, branch_name, based_on_hash, author, created_at, updated_at,\n                   schema_data, instances_data, status, merge_state\n            FROM working_commits\n            WHERE status = 'active'\n            ORDER BY updated_at DESC\n            ",
   "describe": {
     "columns": [
       {
@@ -60,9 +60,7 @@
       }
     ],
     "parameters": {
-      "Left": [
-        "Text"
-      ]
+      "Left": []
     },
     "nullable": [
       false,
@@ -78,5 +76,5 @@
       true
     ]
   },
-  "hash": "19f7fa6b1d690bbcd831dec03adf1b96fddfbfe2d4301fd9166a8a1f3b080846"
+  "hash": "830470f74c92bf4e33646daccab48245f6a8971b031f15b401beff0244a66581"
 }

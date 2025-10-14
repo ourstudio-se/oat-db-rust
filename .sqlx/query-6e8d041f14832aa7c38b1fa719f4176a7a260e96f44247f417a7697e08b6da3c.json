@@ -1,0 +1,19 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n                UPDATE working_commits\n                SET schema_data = $2, instances_data = $3, status = $4, updated_at = $5, merge_state = $6\n                WHERE id = $1\n                ",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Text",
+        "Jsonb",
+        "Jsonb",
+        "Varchar",
+        "Timestamptz",
+        "Jsonb"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "6e8d041f14832aa7c38b1fa719f4176a7a260e96f44247f417a7697e08b6da3c"
+}
