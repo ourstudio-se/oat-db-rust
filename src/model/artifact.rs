@@ -609,6 +609,7 @@ mod tests {
             properties: HashMap::new(),
             relationships: HashMap::new(),
             created_at: chrono::Utc::now(),
+            local_domains: Vec::new(),
             created_by: "test-user".to_string(),
             updated_at: chrono::Utc::now(),
             updated_by: "test-user".to_string(),

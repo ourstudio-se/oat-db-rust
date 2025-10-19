@@ -174,7 +174,7 @@ impl<'a> SolvePipeline<'a> {
                         if requested_props.contains(&derived_property.name) {
                             match &derived_property.fn_short {
                                 Some(short) => {
-                                    let derived_value = self.resolved_derived_property(
+                                    let derived_value = self.resolve_derived_property(
                                         &_target_instance,
                                         &resolved_instances,
                                         solution,
@@ -447,7 +447,7 @@ impl<'a> SolvePipeline<'a> {
         Ok(dependencies)
     }
 
-    fn resolved_derived_property(
+    fn resolve_derived_property(
         &self,
         instance: &Instance,
         other_instances: &[Instance],
@@ -930,10 +930,30 @@ impl<'a> SolvePipeline<'a> {
         let mut our_solutions = Vec::new();
         let mut unsolvable_objectives = Vec::new();
 
+        // Get all those pldag IDs that were preset to 0 before solving
+        let preset_zero_ids: HashSet<&String> = model
+            .nodes
+            .iter()
+            .filter_map(|(id, node)| match &node.expression {
+                pldag::BoolExpression::Composite(_) => None,
+                pldag::BoolExpression::Primitive(bound) => {
+                    if bound.0 == 0 && bound.1 == 0 {
+                        Some(id)
+                    } else {
+                        None
+                    }
+                }
+            })
+            .collect();
+
         for (idx, solution_opt) in solutions.into_iter().enumerate() {
             if let Some(solution) = solution_opt {
                 let mut our_solution = HashMap::new();
                 for (pldag_id, (value, _)) in solution {
+                    if preset_zero_ids.contains(&pldag_id) {
+                        // Skip those IDs that were preset to 0
+                        continue;
+                    }
                     if let Some(our_id) = id_mappings.pldag_to_our.get(&pldag_id) {
                         our_solution.insert(our_id.clone(), value);
                     }
@@ -974,15 +994,22 @@ impl<'a> SolvePipeline<'a> {
         total_time_ms: u64,
         phase_timings: &[(&str, std::time::Duration)],
     ) -> Result<ConfigurationArtifact> {
-        // Update instance domains based on solution
-        for instance in instances.iter_mut() {
-            if let Some(&value) = solution.get(&instance.id) {
-                instance.domain = Some(Domain::constant(value as i32));
-            } else if instance.domain.is_none() {
-                // Default domain for instances not in solution
-                instance.domain = Some(Domain::binary());
-            }
-        }
+        // Update instance domains based on solution. Exclude the instance if not in solution.
+        let solution_instances: Vec<Instance> = instances
+            .iter()
+            .filter_map(|inst| {
+                if let Some(value) = solution.get(&inst.id) {
+                    let mut updated_instance = inst.clone();
+                    updated_instance.domain = Some(Domain {
+                        lower: *value as i32,
+                        upper: *value as i32,
+                    });
+                    Some(updated_instance)
+                } else {
+                    None
+                }
+            })
+            .collect();
 
         // Create artifact
         let artifact_id = generate_configuration_id(
@@ -997,7 +1024,7 @@ impl<'a> SolvePipeline<'a> {
             request.user_metadata.clone(),
         );
 
-        artifact.set_configuration(instances);
+        artifact.set_configuration(solution_instances);
 
         // Set metadata
         artifact.solve_metadata = SolveMetadata {
@@ -1072,161 +1099,5 @@ impl IdMappings {
 
     fn count(&self) -> usize {
         self.our_to_pldag.len()
-    }
-}
-
-/// Legacy solve pipeline that takes a Store - for backward compatibility
-/// This is used by API handlers until they are refactored to use commit-based approach
-pub struct SolvePipelineWithStore<
-    'a,
-    S: crate::store::traits::Store + crate::store::traits::CommitStore,
-> {
-    store: &'a S,
-}
-
-impl<'a, S: crate::store::traits::Store + crate::store::traits::CommitStore>
-    SolvePipelineWithStore<'a, S>
-{
-    /// Create a new solve pipeline with store
-    pub fn new(store: &'a S) -> Self {
-        Self { store }
-    }
-
-    /// Execute the complete solve pipeline (deprecated - use solve_instance instead)
-    /// This method is deprecated in favor of the ILP-based solve_instance approach
-    pub async fn solve(&self, _request: NewConfigurationArtifact) -> Result<ConfigurationArtifact> {
-        // For now, return an error indicating this method is deprecated
-        Err(anyhow::anyhow!(
-            "The solve method is deprecated. Use solve_instance with a specific target instance ID instead."
-        ))
-    }
-
-    /// Execute the solve pipeline with objectives for combinatorial search
-    pub async fn solve_instance(
-        &self,
-        request: NewConfigurationArtifact,
-        target_instance_id: Id,
-        objective: HashMap<String, f64>,
-    ) -> Result<ConfigurationArtifact, SolveError> {
-        // Fetch the commit based on resolution context
-        let commit = if let Some(commit_hash) = &request.resolution_context.commit_hash {
-            // Fetch specific commit
-            self.store
-                .get_commit(commit_hash)
-                .await?
-                .ok_or_else(|| anyhow::anyhow!("Commit {} not found", commit_hash))?
-        } else {
-            // Fetch current commit from branch
-            let branch = self
-                .store
-                .get_branch(
-                    &request.resolution_context.database_id,
-                    &request.resolution_context.branch_id,
-                )
-                .await?
-                .ok_or_else(|| {
-                    anyhow::anyhow!("Branch {} not found", request.resolution_context.branch_id)
-                })?;
-
-            let Some(ref commit_hash) = branch.current_commit_hash else {
-                return Err(SolveError::Other(anyhow::anyhow!(
-                    "Branch {} has no current commit",
-                    request.resolution_context.branch_id
-                )));
-            };
-
-            self.store
-                .get_commit(commit_hash)
-                .await?
-                .ok_or_else(|| anyhow::anyhow!("Commit {} not found", commit_hash))?
-        };
-
-        // Get commit data and create pipeline
-        let commit_data = commit
-            .get_data()
-            .map_err(|e| SolveError::Other(anyhow::anyhow!("Failed to read commit data: {}", e)))?;
-        let pipeline = SolvePipeline::new(&commit_data);
-        let result = pipeline.solve_instance_with_multiple_objectives_and_derived_properties(
-            request,
-            target_instance_id,
-            vec![("objective".into(), objective)],
-            None,
-        )?;
-        // Return the first (and only) artifact
-        result
-            .into_iter()
-            .next()
-            .map(|(_, artifact)| artifact)
-            .ok_or_else(|| SolveError::Other(anyhow::anyhow!("No artifact returned from solve")))
-    }
-
-    /// Execute the solve pipeline with multiple objective sets for efficient batch solving
-    pub async fn solve_instance_with_multiple_objectives(
-        &self,
-        request: NewConfigurationArtifact,
-        target_instance_id: Id,
-        objective_sets: Vec<(String, HashMap<String, f64>)>,
-    ) -> Result<Vec<(String, ConfigurationArtifact)>, SolveError> {
-        self.solve_instance_with_multiple_objectives_and_derived_properties(
-            request,
-            target_instance_id,
-            objective_sets,
-            None,
-        )
-        .await
-    }
-
-    /// Execute the solve pipeline with multiple objective sets and derived properties
-    pub async fn solve_instance_with_multiple_objectives_and_derived_properties(
-        &self,
-        request: NewConfigurationArtifact,
-        target_instance_id: Id,
-        objective_sets: Vec<(String, HashMap<String, f64>)>,
-        derived_properties: Option<Vec<String>>,
-    ) -> Result<Vec<(String, ConfigurationArtifact)>, SolveError> {
-        // Fetch the commit based on resolution context
-        let commit = if let Some(commit_hash) = &request.resolution_context.commit_hash {
-            // Fetch specific commit
-            self.store
-                .get_commit(commit_hash)
-                .await?
-                .ok_or_else(|| anyhow::anyhow!("Commit {} not found", commit_hash))?
-        } else {
-            // Fetch current commit from branch
-            let branch = self
-                .store
-                .get_branch(
-                    &request.resolution_context.database_id,
-                    &request.resolution_context.branch_id,
-                )
-                .await?
-                .ok_or_else(|| {
-                    anyhow::anyhow!("Branch {} not found", request.resolution_context.branch_id)
-                })?;
-
-            let Some(ref commit_hash) = branch.current_commit_hash else {
-                return Err(SolveError::Other(anyhow::anyhow!(
-                    "Branch {} has no current commit",
-                    request.resolution_context.branch_id
-                )));
-            };
-
-            self.store
-                .get_commit(commit_hash)
-                .await?
-                .ok_or_else(|| anyhow::anyhow!("Commit {} not found", commit_hash))?
-        };
-
-        // Get commit data and create pipeline
-        let commit_data = commit
-            .get_data()
-            .map_err(|e| SolveError::Other(anyhow::anyhow!("Failed to read commit data: {}", e)))?;
-        let pipeline = SolvePipeline::new(&commit_data);
-        pipeline.solve_instance_with_multiple_objectives_and_derived_properties(
-            request,
-            target_instance_id,
-            objective_sets,
-            derived_properties,
-        )
     }
 }

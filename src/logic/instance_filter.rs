@@ -273,6 +273,7 @@ mod tests {
             domain: None,
             properties,
             relationships: HashMap::new(),
+            local_domains: Vec::new(),
             created_by: "test".to_string(),
             created_at: chrono::Utc::now(),
             updated_by: "test".to_string(),

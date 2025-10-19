@@ -56,6 +56,7 @@ fn create_system_instance(
         domain,
         properties,
         relationships,
+        local_domains: Vec::new(),
         created_by: system_user.clone(),
         created_at: now,
         updated_by: system_user,

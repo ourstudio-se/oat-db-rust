@@ -262,6 +262,10 @@ pub fn create_router<S: Store + 'static>() -> Router<Arc<S>> {
             get(handlers::get_working_commit_instance::<S>),
         )
         .route(
+            "/databases/:db_id/branches/:branch_id/working-commit/instances/:instance_id/relationships",
+            get(handlers::get_working_commit_instance_relationships::<S>),
+        )
+        .route(
             "/databases/:db_id/branches/:branch_id/working-commit/instances/:instance_id/query",
             post(handlers::query_working_commit_instance_configuration::<S>),
         )

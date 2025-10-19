@@ -83,6 +83,7 @@ impl Expander {
             properties: expanded_props,
             relationships: expanded_rels,
             included: Vec::new(),
+            local_domains: instance.local_domains.clone(),
             created_by: instance.created_by.clone(),
             created_at: instance.created_at,
             updated_by: instance.updated_by.clone(),

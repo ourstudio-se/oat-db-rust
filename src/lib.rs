@@ -14,9 +14,8 @@ pub use api::routes;
 // Export logic types (excluding conflicting merge types)
 pub use logic::{
     filter_instances, BranchOperationsV2, Expander, MergeValidationResult, PoolResolver,
-    SelectionResult, SimpleEvaluator, SimpleValidator, SolveError, SolvePipeline,
-    SolvePipelineWithStore, ValidationError, ValidationErrorType, ValidationResult,
-    ValidationWarning, ValidationWarningType,
+    SelectionResult, SimpleEvaluator, SimpleValidator, SolveError, SolvePipeline, ValidationError,
+    ValidationErrorType, ValidationResult, ValidationWarning, ValidationWarningType,
 };
 
 // Export all model types
@@ -39,8 +38,9 @@ pub async fn run_server() -> anyhow::Result<()> {
 
     // Initialize logging with INFO level, explicitly suppress sqlx debug logs
     let _ = env_logger::Builder::from_env(
-        env_logger::Env::default().default_filter_or("info,sqlx=warn")
-    ).try_init();
+        env_logger::Env::default().default_filter_or("info,sqlx=warn"),
+    )
+    .try_init();
 
     // Load configuration
     let config = crate::config::AppConfig::load()?;
@@ -145,6 +145,7 @@ mod tests {
             domain: None,
             properties,
             relationships: HashMap::new(),
+            local_domains: Vec::new(),
             created_by: "test".to_string(),
             created_at: chrono::Utc::now(),
             updated_by: "test".to_string(),
@@ -207,6 +208,7 @@ mod tests {
             domain: None,
             properties: properties2,
             relationships: HashMap::new(),
+            local_domains: Vec::new(),
             created_by: "test".to_string(),
             created_at: chrono::Utc::now(),
             updated_by: "test".to_string(),
@@ -514,53 +516,73 @@ mod tests {
     async fn test_relationship_poolbased_serialization() {
         // This test verifies the serialization behavior of PoolBased relationships
         use crate::model::{Instance, RelationshipSelection};
-        use std::collections::HashMap;
         use serde_json;
-        
+        use std::collections::HashMap;
+
         // Test 1: PoolBased with null pool and selection
         let pool_based = RelationshipSelection::PoolBased {
             pool: None,
             selection: None,
         };
-        
+
         let json = serde_json::to_string(&pool_based).unwrap();
-        println!("PoolBased with null pool and selection serializes to: {}", json);
-        
+        println!(
+            "PoolBased with null pool and selection serializes to: {}",
+            json
+        );
+
         // Due to skip_serializing_if, selection field won't be included when None
-        assert_eq!(json, r#"{"pool":null}"#, "Only pool field should be serialized");
-        
+        assert_eq!(
+            json, r#"{"pool":null}"#,
+            "Only pool field should be serialized"
+        );
+
         // Test 2: Create an instance with this relationship
         let mut relationships = HashMap::new();
         relationships.insert("wheels".to_string(), pool_based);
-        
+
         let instance = Instance {
             id: "bike-001".to_string(),
             class_id: "Bicycle".to_string(),
             domain: None,
             properties: HashMap::new(),
             relationships: relationships.clone(),
+            local_domains: Vec::new(),
             created_by: "test".to_string(),
             created_at: chrono::Utc::now(),
-            updated_by: "test".to_string(), 
+            updated_by: "test".to_string(),
             updated_at: chrono::Utc::now(),
         };
-        
+
         // Serialize the instance
         let instance_json = serde_json::to_value(&instance).unwrap();
         let relationships_json = instance_json.get("relationships").unwrap();
         let wheels_json = relationships_json.get("wheels").unwrap();
-        
-        println!("Instance relationships field contains: {}", serde_json::to_string_pretty(relationships_json).unwrap());
-        
+
+        println!(
+            "Instance relationships field contains: {}",
+            serde_json::to_string_pretty(relationships_json).unwrap()
+        );
+
         // Verify the relationship is preserved
         assert!(wheels_json.is_object(), "Relationship should be an object");
-        assert!(wheels_json.get("pool").is_some(), "Pool field should be present");
-        
+        assert!(
+            wheels_json.get("pool").is_some(),
+            "Pool field should be present"
+        );
+
         // Test 3: Deserialize back and verify
         let deserialized: Instance = serde_json::from_value(instance_json).unwrap();
-        assert_eq!(deserialized.relationships.len(), 1, "Should have one relationship");
-        assert!(deserialized.relationships.contains_key("wheels"), "Should have wheels relationship");
-        
+        assert_eq!(
+            deserialized.relationships.len(),
+            1,
+            "Should have one relationship"
+        );
+        assert!(
+            deserialized.relationships.contains_key("wheels"),
+            "Should have wheels relationship"
+        );
+
         match &deserialized.relationships["wheels"] {
             RelationshipSelection::PoolBased { pool, selection } => {
                 assert_eq!(pool, &None, "Pool should be None");
@@ -569,16 +591,16 @@ mod tests {
             }
             _ => panic!("Expected PoolBased variant"),
         }
-        
+
         println!("✅ PoolBased relationships are preserved through serialization");
     }
-    
+
     #[tokio::test]
     async fn test_relationship_api_deserialization() {
         // This test simulates what happens when the API receives the user's JSON
         use crate::model::{Instance, RelationshipSelection};
         use serde_json;
-        
+
         // Test the exact JSON the user is sending
         let user_json = r#"{
             "id": "bike-001",
@@ -594,17 +616,21 @@ mod tests {
                 }
             }
         }"#;
-        
+
         // Try to deserialize as Instance
         let instance_result = serde_json::from_str::<Instance>(user_json);
-        
+
         match instance_result {
             Ok(instance) => {
                 println!("✓ User JSON deserializes successfully");
                 assert_eq!(instance.id, "bike-001");
                 assert_eq!(instance.class_id, "Bicycle");
-                assert_eq!(instance.relationships.len(), 1, "Should have one relationship");
-                
+                assert_eq!(
+                    instance.relationships.len(),
+                    1,
+                    "Should have one relationship"
+                );
+
                 // Check the wheels relationship
                 match instance.relationships.get("wheels") {
                     Some(RelationshipSelection::PoolBased { pool, selection }) => {
@@ -618,7 +644,7 @@ mod tests {
             }
             Err(e) => panic!("Failed to deserialize user JSON: {}", e),
         }
-        
+
         // Test another variant - the Filter format the user mentioned
         let filter_json = r#"{
             "id": "car-001",
@@ -635,19 +661,17 @@ mod tests {
                 }
             }
         }"#;
-        
+
         let filter_result = serde_json::from_str::<Instance>(filter_json);
         match filter_result {
-            Ok(instance) => {
-                match instance.relationships.get("color") {
-                    Some(RelationshipSelection::Filter { filter }) => {
-                        assert_eq!(filter.types, Some(vec!["Color".to_string()]));
-                        println!("✓ Filter relationship variant works correctly");
-                    }
-                    Some(other) => panic!("Expected Filter variant, got: {:?}", other),
-                    None => panic!("Color relationship is missing!"),
+            Ok(instance) => match instance.relationships.get("color") {
+                Some(RelationshipSelection::Filter { filter }) => {
+                    assert_eq!(filter.types, Some(vec!["Color".to_string()]));
+                    println!("✓ Filter relationship variant works correctly");
                 }
-            }
+                Some(other) => panic!("Expected Filter variant, got: {:?}", other),
+                None => panic!("Color relationship is missing!"),
+            },
             Err(e) => panic!("Failed to deserialize filter JSON: {}", e),
         }
     }
@@ -656,7 +680,7 @@ mod tests {
     fn test_property_value_json_format() {
         use crate::model::PropertyValue;
         use serde_json;
-        
+
         // Test exactly what the API is doing
         let full_request = r#"{
             "id": "c1",
@@ -677,19 +701,22 @@ mod tests {
             },
             "relationships": {}
         }"#;
-        
+
         // Parse as serde_json::Value first (like the API does)
         let instance_update: serde_json::Value = serde_json::from_str(full_request).unwrap();
-        
+
         // Extract properties field
         if let Some(properties) = instance_update.get("properties") {
-            println!("Properties JSON: {}", serde_json::to_string_pretty(properties).unwrap());
-            
+            println!(
+                "Properties JSON: {}",
+                serde_json::to_string_pretty(properties).unwrap()
+            );
+
             // Try to deserialize exactly like the API
             let result = serde_json::from_value::<std::collections::HashMap<String, PropertyValue>>(
-                properties.clone()
+                properties.clone(),
             );
-            
+
             match &result {
                 Ok(map) => {
                     println!("Successfully deserialized {} properties!", map.len());
@@ -702,7 +729,7 @@ mod tests {
                     println!("Error details: {:?}", e);
                 }
             }
-            
+
             assert!(result.is_ok(), "Properties should deserialize successfully");
         }
     }
@@ -710,10 +737,12 @@ mod tests {
     #[tokio::test]
     async fn test_working_commit_instance_persistence() {
         // This test simulates the exact flow of creating an instance in working commit
-        use crate::model::{Instance, RelationshipSelection, WorkingCommit, Schema, WorkingCommitStatus};
-        use std::collections::HashMap;
+        use crate::model::{
+            Instance, RelationshipSelection, Schema, WorkingCommit, WorkingCommitStatus,
+        };
         use serde_json;
-        
+        use std::collections::HashMap;
+
         // Create a working commit
         let mut working_commit = WorkingCommit {
             id: "wc-001".to_string(),
@@ -732,52 +761,69 @@ mod tests {
             status: WorkingCommitStatus::Active,
             merge_state: None,
         };
-        
+
         // Create an instance with PoolBased relationship
         let mut relationships = HashMap::new();
-        relationships.insert("wheels".to_string(), RelationshipSelection::PoolBased {
-            pool: None,
-            selection: None,
-        });
-        
+        relationships.insert(
+            "wheels".to_string(),
+            RelationshipSelection::PoolBased {
+                pool: None,
+                selection: None,
+            },
+        );
+
         let instance = Instance {
             id: "bike-001".to_string(),
             class_id: "Bicycle".to_string(),
             domain: None,
             properties: HashMap::new(),
             relationships,
+            local_domains: Vec::new(),
             created_by: "test".to_string(),
             created_at: chrono::Utc::now(),
             updated_by: "test".to_string(),
             updated_at: chrono::Utc::now(),
         };
-        
+
         // Add instance to working commit (simulating the handler)
         working_commit.instances_data.push(instance.clone());
-        
+
         // Serialize the working commit (simulating what PostgresStore does)
         let instances_json = serde_json::to_value(&working_commit.instances_data).unwrap();
-        println!("Serialized instances: {}", serde_json::to_string_pretty(&instances_json).unwrap());
-        
+        println!(
+            "Serialized instances: {}",
+            serde_json::to_string_pretty(&instances_json).unwrap()
+        );
+
         // Check that the relationship is preserved in JSON
         let first_instance = instances_json.get(0).unwrap();
         let relationships = first_instance.get("relationships").unwrap();
-        assert!(relationships.get("wheels").is_some(), "Wheels relationship should exist in JSON");
-        
+        assert!(
+            relationships.get("wheels").is_some(),
+            "Wheels relationship should exist in JSON"
+        );
+
         // Deserialize back (simulating reading from DB)
         let deserialized_instances: Vec<Instance> = serde_json::from_value(instances_json).unwrap();
         assert_eq!(deserialized_instances.len(), 1);
-        
+
         let deserialized_instance = &deserialized_instances[0];
-        assert_eq!(deserialized_instance.relationships.len(), 1, "Should have one relationship after deserialization");
-        
+        assert_eq!(
+            deserialized_instance.relationships.len(),
+            1,
+            "Should have one relationship after deserialization"
+        );
+
         match deserialized_instance.relationships.get("wheels") {
             Some(RelationshipSelection::PoolBased { pool, selection }) => {
                 assert_eq!(pool, &None);
                 assert_eq!(selection, &None);
                 println!("✓ PoolBased relationship survives working commit serialization");
             }
-            Some(other) => panic!("Unexpected relationship variant after deserialization: {:?}", other),
+            Some(other) => panic!(
+                "Unexpected relationship variant after deserialization: {:?}",
+                other
+            ),
             None => panic!("Wheels relationship lost during serialization!"),
         }
     }
@@ -786,7 +832,7 @@ mod tests {
     async fn test_classdef_base_backward_compatibility() {
         // This test verifies that ClassDef can deserialize old data without the base field
         use crate::model::{Base, BaseOp, ClassDef};
-        
+
         // Test 1: Old ClassDef JSON without base field should deserialize with default base
         let old_classdef_json = r#"{
             "id": "test-class",
@@ -801,12 +847,12 @@ mod tests {
             "updated_by": "system", 
             "updated_at": "2024-01-01T00:00:00Z"
         }"#;
-        
+
         let classdef: ClassDef = serde_json::from_str(old_classdef_json).unwrap();
         assert_eq!(classdef.base.op, BaseOp::All);
         assert_eq!(classdef.base.val, None);
         println!("✓ Old ClassDef without base field deserializes with default base");
-        
+
         // Test 2: New ClassDef JSON with explicit base field
         let new_classdef_json = r#"{
             "id": "test-class-2",
@@ -822,18 +868,18 @@ mod tests {
             "updated_by": "system",
             "updated_at": "2024-01-01T00:00:00Z"
         }"#;
-        
+
         let classdef2: ClassDef = serde_json::from_str(new_classdef_json).unwrap();
         assert_eq!(classdef2.base.op, BaseOp::AtLeast);
         assert_eq!(classdef2.base.val, Some(3));
         println!("✓ New ClassDef with explicit base field deserializes correctly");
-        
+
         // Test 3: Test serialization includes base field
         let serialized = serde_json::to_string(&classdef).unwrap();
         assert!(serialized.contains("\"base\""));
         assert!(serialized.contains("\"op\":\"all\""));
         println!("✓ Serialized ClassDef includes base field");
-        
+
         // Test 4: Test all BaseOp enum variants serialize correctly
         let test_base_ops = vec![
             ("all", BaseOp::All),
@@ -844,7 +890,7 @@ mod tests {
             ("imply", BaseOp::Imply),
             ("equiv", BaseOp::Equiv),
         ];
-        
+
         for (json_str, expected_op) in test_base_ops {
             let json = format!(r#"{{"op": "{}", "val": 2}}"#, json_str);
             let base: Base = serde_json::from_str(&json).unwrap();
@@ -852,7 +898,7 @@ mod tests {
             assert_eq!(base.val, Some(2));
         }
         println!("✓ All BaseOp enum variants deserialize correctly");
-        
+
         // Test 5: Test that val is omitted when None
         let base_no_val = Base {
             op: BaseOp::All,
@@ -862,5 +908,4 @@ mod tests {
         assert!(!json.contains("\"val\""));
         println!("✓ Base serialization omits val when None");
     }
-
 }

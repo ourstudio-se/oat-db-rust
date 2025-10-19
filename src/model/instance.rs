@@ -14,6 +14,13 @@ fn default_timestamp() -> DateTime<Utc> {
     DateTime::from_timestamp(0, 0).unwrap_or_else(|| Utc::now())
 }
 
+/// Local domain override for a specific variable within an instance
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct LocalDomain {
+    pub id: Id,
+    pub domain: Domain,
+}
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Instance {
     pub id: Id,
@@ -23,6 +30,10 @@ pub struct Instance {
     pub domain: Option<Domain>,
     pub properties: HashMap<String, PropertyValue>,
     pub relationships: HashMap<String, RelationshipSelection>,
+
+    /// Local domain overrides for variables within this instance
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub local_domains: Vec<LocalDomain>,
 
     /// Audit fields for tracking who created/modified this instance
     #[serde(default = "default_user")]
@@ -80,7 +91,7 @@ impl<'de> Deserialize<'de> for PropertyValue {
             },
             _ => {
                 return Err(serde::de::Error::custom(
-                    "Invalid property format: expected string, number, boolean, or structured type"
+                    "Invalid property format: expected string, number, boolean, or structured type",
                 ));
             }
         };
@@ -129,6 +140,8 @@ pub struct NewInstance {
     pub domain: Option<Domain>,
     pub properties: HashMap<String, PropertyValue>,
     pub relationships: HashMap<String, RelationshipSelection>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub local_domains: Option<Vec<LocalDomain>>,
 }
 
 /// Instance update model for PATCH operations
@@ -157,6 +170,10 @@ pub struct ExpandedInstance {
     pub relationships: HashMap<String, ResolvedRelationship>,
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub included: Vec<ExpandedInstance>,
+
+    /// Local domain overrides for variables within this instance
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub local_domains: Vec<LocalDomain>,
 
     /// Audit fields for tracking who created/modified this instance
     #[serde(default = "default_user")]
@@ -203,6 +220,7 @@ impl ExpandedInstance {
                     )
                 })
                 .collect(),
+            local_domains: self.local_domains.clone(),
             created_by: self.created_by.clone(),
             created_at: self.created_at,
             updated_by: self.updated_by.clone(),
@@ -287,6 +305,7 @@ impl NewInstance {
             domain: self.domain,
             properties: self.properties,
             relationships: self.relationships,
+            local_domains: self.local_domains.unwrap_or_default(),
             created_by: user_id.clone(),
             created_at: now,
             updated_by: user_id,
@@ -306,6 +325,7 @@ impl Default for Instance {
             domain: None,
             properties: HashMap::new(),
             relationships: HashMap::new(),
+            local_domains: Vec::new(),
             created_by: system_user.clone(),
             created_at: now,
             updated_by: system_user,
@@ -326,6 +346,7 @@ impl Default for ExpandedInstance {
             properties: HashMap::new(),
             relationships: HashMap::new(),
             included: Vec::new(),
+            local_domains: Vec::new(),
             created_by: system_user.clone(),
             created_at: now,
             updated_by: system_user,

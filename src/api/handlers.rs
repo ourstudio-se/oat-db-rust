@@ -12,9 +12,8 @@ use crate::logic::{Expander, SimpleValidator};
 use crate::model::{
     generate_id, BatchInstanceQueryRequest, BatchQueryMetadata, BatchQueryResponse, Branch,
     ClassDef, ClassDefUpdate, Commit, CommitTag, ConfigurationArtifact, ConfigurationResult,
-    Database, Domain, ExpandedInstance, Id, Instance, NewClassDef, NewCommit, NewCommitTag,
-    NewDatabase, NewWorkingCommit, PropertyValue, RelationshipSelection, Schema,
-    SimpleBatchInstanceQueryRequest, SimpleBatchQueryResponse, SimpleConfigurationResult,
+    Database, Domain, ExpandedInstance, Id, Instance, LocalDomain, NewClassDef, NewCommit,
+    NewCommitTag, NewDatabase, NewWorkingCommit, PropertyValue, RelationshipSelection, Schema,
     SimpleInstanceQueryRequest, TagQuery, TagType, TaggedCommit, UserContext, WorkingCommit,
     WorkingCommitStatus,
 };
@@ -8417,6 +8416,21 @@ async fn batch_query_instance_configuration_impl<S: Store>(
         }
     }
 
+    // Get the specific instance to solve
+    let target_instance = commit
+        .instances
+        .iter()
+        .find(|inst| inst.id == instance_id)
+        .ok_or_else(|| {
+            (
+                StatusCode::NOT_FOUND,
+                Json(ErrorResponse::new(&format!(
+                    "Instance '{}' not found",
+                    instance_id
+                ))),
+            )
+        })?;
+
     // Create solve pipeline and execute with batch optimization
     // Working commit already contains the data we need directly
     let commit_data = CommitData {
@@ -8425,11 +8439,21 @@ async fn batch_query_instance_configuration_impl<S: Store>(
     };
     let derived_properties: Vec<String> = request.derived_properties.unwrap_or_default();
     let pipeline = SolvePipeline::new(&commit_data);
-    let batch_results = pipeline.solve_instance_with_multiple_objectives_and_derived_properties(
+    let batch_results = pipeline.solve_instance_with_constraints(
         solve_request,
         instance_id.clone(),
         objective_sets,
         Some(derived_properties),
+        |_model, _mappings| {
+            // Edit the domain for every variable in the local_domains
+            for var in target_instance.local_domains.iter() {
+                _model.set_bounds(
+                    var.id.as_str(),
+                    (var.domain.lower.into(), var.domain.upper.into()),
+                );
+            }
+            Ok(())
+        },
     );
 
     // Process batch results
@@ -8619,6 +8643,21 @@ pub async fn batch_query_working_commit_instance_configuration<S: Store + Workin
         }
     }
 
+    // Get the specific instance to solve
+    let target_instance = working_commit
+        .instances_data
+        .iter()
+        .find(|inst| inst.id == instance_id)
+        .ok_or_else(|| {
+            (
+                StatusCode::NOT_FOUND,
+                Json(ErrorResponse::new(&format!(
+                    "Instance '{}' not found",
+                    instance_id
+                ))),
+            )
+        })?;
+
     // Create solve pipeline and execute with batch optimization
     // Working commit already contains the data we need directly
     let commit_data = CommitData {
@@ -8627,11 +8666,21 @@ pub async fn batch_query_working_commit_instance_configuration<S: Store + Workin
     };
     let derived_properties: Vec<String> = request.derived_properties.unwrap_or_default();
     let pipeline = SolvePipeline::new(&commit_data);
-    let batch_results = pipeline.solve_instance_with_multiple_objectives_and_derived_properties(
+    let batch_results = pipeline.solve_instance_with_constraints(
         solve_request,
         instance_id.clone(),
         objective_sets,
         Some(derived_properties),
+        |_model, _mappings| {
+            // Edit the domain for every variable in the local_domains
+            for var in target_instance.local_domains.iter() {
+                _model.set_bounds(
+                    var.id.as_str(),
+                    (var.domain.lower.into(), var.domain.upper.into()),
+                );
+            }
+            Ok(())
+        },
     );
 
     // Process batch results
@@ -8830,6 +8879,21 @@ pub async fn batch_query_commit_instance_configuration<S: Store + CommitStore>(
         }
     }
 
+    // Get the specific instance to solve
+    let target_instance = commit_data
+        .instances
+        .iter()
+        .find(|inst| inst.id == instance_id)
+        .ok_or_else(|| {
+            (
+                StatusCode::NOT_FOUND,
+                Json(ErrorResponse::new(&format!(
+                    "Instance '{}' not found",
+                    instance_id
+                ))),
+            )
+        })?;
+
     // Create solve pipeline and execute with batch optimization
     // Working commit already contains the data we need directly
     let commit_data = CommitData {
@@ -8838,11 +8902,21 @@ pub async fn batch_query_commit_instance_configuration<S: Store + CommitStore>(
     };
     let derived_properties: Vec<String> = request.derived_properties.unwrap_or_default();
     let pipeline = SolvePipeline::new(&commit_data);
-    let batch_results = pipeline.solve_instance_with_multiple_objectives_and_derived_properties(
+    let batch_results = pipeline.solve_instance_with_constraints(
         solve_request,
         instance_id.clone(),
         objective_sets,
         Some(derived_properties),
+        |_model, _mappings| {
+            // Edit the domain for every variable in the local_domains
+            for var in target_instance.local_domains.iter() {
+                _model.set_bounds(
+                    var.id.as_str(),
+                    (var.domain.lower.into(), var.domain.upper.into()),
+                );
+            }
+            Ok(())
+        },
     );
 
     // Process batch results
@@ -11246,7 +11320,6 @@ pub async fn update_working_commit_instance<S: WorkingCommitStore + Store + Bran
     Path((db_id, branch_name, instance_id)): Path<(Id, String, Id)>,
     RequestJson(instance_update): RequestJson<serde_json::Value>,
 ) -> Result<Json<Instance>, (StatusCode, Json<ErrorResponse>)> {
-    
     // Get or create the working commit
     let mut working_commit = get_or_create_working_commit(&*store, &db_id, &branch_name)
         .await
@@ -11322,6 +11395,36 @@ pub async fn update_working_commit_instance<S: WorkingCommitStore + Store + Bran
                 }
             }
 
+            if let Some(local_domains) = instance_update.get("local_domains") {
+                match serde_json::from_value::<Vec<LocalDomain>>(local_domains.clone()) {
+                    Ok(new_local_domains) => {
+                        // Merge local domains (allowing partial updates)
+                        for new_ld in new_local_domains {
+                            if let Some(existing_ld) = instance
+                                .local_domains
+                                .iter_mut()
+                                .find(|ld| ld.id == new_ld.id)
+                            {
+                                // Update existing local domain
+                                existing_ld.domain = new_ld.domain;
+                            } else {
+                                // Add new local domain
+                                instance.local_domains.push(new_ld);
+                            }
+                        }
+                    }
+                    Err(e) => {
+                        return Err((
+                            StatusCode::BAD_REQUEST,
+                            Json(ErrorResponse::new(&format!(
+                                "Invalid local_domains format: {}. Expected format: [{{\"id\": \"var1\", \"domain\": {{\"lower\": 0.0, \"upper\": 10.0}}}}, ...]",
+                                e
+                            ))),
+                        ));
+                    }
+                }
+            }
+
             // Update timestamps
             instance.updated_at = chrono::Utc::now();
             instance.updated_by = "api-user".to_string(); // TODO: Get from auth context
@@ -11376,6 +11479,7 @@ pub async fn update_working_commit_instance<S: WorkingCommitStore + Store + Bran
             domain: None,
             properties: HashMap::new(),
             relationships: HashMap::new(),
+            local_domains: Vec::new(),
             created_by: "api-user".to_string(), // TODO: Get from auth context
             created_at: now,
             updated_by: "api-user".to_string(), // TODO: Get from auth context
@@ -11766,6 +11870,7 @@ pub async fn bulk_update_working_commit_instances<S: WorkingCommitStore + Store 
                 domain: None,
                 properties: std::collections::HashMap::new(),
                 relationships: std::collections::HashMap::new(),
+                local_domains: Vec::new(),
                 created_by: "api-user".to_string(),
                 created_at: now,
                 updated_by: "api-user".to_string(),
@@ -12436,6 +12541,137 @@ pub async fn get_working_commit_instance<S: WorkingCommitStore + Store + BranchS
     }
 }
 
+/// Get all relationship variables/instances for a working commit instance using BFS traversal
+/// Returns all connected instances with their paths (e.g., "X/colors/a", "X/colors/a/hex/FFFFFF")
+pub async fn get_working_commit_instance_relationships<
+    S: WorkingCommitStore + Store + BranchStore,
+>(
+    State(store): State<AppState<S>>,
+    Path((db_id, branch_name, instance_id)): Path<(Id, String, Id)>,
+) -> Result<Json<serde_json::Value>, (StatusCode, Json<ErrorResponse>)> {
+    // Verify branch belongs to database
+    if let Err(e) = verify_branch_exists(&*store, &db_id, &branch_name).await {
+        return Err(e);
+    }
+
+    let working_commit = get_or_create_working_commit(&*store, &db_id, &branch_name)
+        .await
+        .map_err(|e| {
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(ErrorResponse::new(&e.to_string())),
+            )
+        })?;
+
+    // Get instances from working_commit
+    let instances = &working_commit.instances_data;
+
+    // Find the root instance
+    let root_instance = instances
+        .iter()
+        .find(|i| i.id == instance_id)
+        .ok_or_else(|| {
+            (
+                StatusCode::NOT_FOUND,
+                Json(ErrorResponse::new(&format!(
+                    "Instance '{}' not found in working commit",
+                    instance_id
+                ))),
+            )
+        })?;
+
+    // Expand the root instance
+    let _expanded_root =
+        Expander::expand_instance(root_instance, instances, &working_commit.schema_data)
+            .await
+            .map_err(|e| {
+                (
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    Json(ErrorResponse::new(&format!(
+                        "Failed to expand instance: {}",
+                        e
+                    ))),
+                )
+            })?;
+
+    // Expand all instances
+    let mut expanded_instances = Vec::new();
+    for instance in instances {
+        if let Ok(expanded) =
+            Expander::expand_instance(instance, instances, &working_commit.schema_data).await
+        {
+            expanded_instances.push(expanded);
+        }
+    }
+
+    // Perform BFS traversal to collect all relationship paths
+    let relationship_paths = traverse_relationships_bfs(&_expanded_root, &expanded_instances);
+
+    Ok(Json(serde_json::json!({
+        "root_instance_id": instance_id,
+        "relationships": relationship_paths
+    })))
+}
+
+/// BFS traversal to collect all relationship instances with their paths
+fn traverse_relationships_bfs(
+    root_instance: &ExpandedInstance,
+    all_instances: &[ExpandedInstance],
+) -> Vec<serde_json::Value> {
+    use std::collections::{HashMap, HashSet, VecDeque};
+
+    let mut result = Vec::new();
+    let mut visited: HashSet<String> = HashSet::new();
+    let mut queue: VecDeque<(String, String, usize)> = VecDeque::new();
+
+    // Create instance lookup map for quick access
+    let instance_map: HashMap<&String, &ExpandedInstance> =
+        all_instances.iter().map(|inst| (&inst.id, inst)).collect();
+
+    // Initialize queue with root instance's relationships
+    visited.insert(root_instance.id.clone());
+
+    for (rel_name, rel_selection) in &root_instance.relationships {
+        for rel_instance_id in rel_selection.materialized_ids.iter() {
+            let path = format!("{}/{}/{}", root_instance.id, rel_name, rel_instance_id);
+            queue.push_back((rel_instance_id.to_string(), path, 1)); // (instance_id, path, depth)
+        }
+    }
+
+    // BFS traversal
+    while let Some((current_id, current_path, depth)) = queue.pop_front() {
+        // Skip if already visited
+        if visited.contains(&current_id) {
+            continue;
+        }
+        visited.insert(current_id.clone());
+
+        // Find the instance
+        if let Some(current_instance) = instance_map.get(&current_id) {
+            // Add to result
+            result.push(serde_json::json!({
+                "instance_id": current_id,
+                "path": current_path,
+                "depth": depth,
+                "class": current_instance.class_id,
+            }));
+
+            // Add current instance's relationships to the queue
+            for (rel_name, rel_selection) in &current_instance.relationships {
+                let child_ids = rel_selection.materialized_ids.clone();
+                for child_id in child_ids {
+                    if !visited.contains(&child_id) {
+                        let child_path = format!("{}/{}/{}", current_path, rel_name, child_id);
+                        queue.push_back((child_id, child_path, depth + 1));
+                    }
+                }
+            }
+        }
+    }
+
+    result
+}
+
 /// Query working commit instance configuration (POST) - simple version with property-weight pairs
 /// Accepts objectives in JSON body and optionally derived_properties in URL query params
 pub async fn query_working_commit_instance_configuration<
@@ -12721,16 +12957,41 @@ async fn execute_instance_query(
         user_metadata: None,
     };
 
+    // Get the specific instance to solve
+    let target_instance = commit_data
+        .instances
+        .iter()
+        .find(|inst| inst.id == instance_id)
+        .ok_or_else(|| {
+            (
+                StatusCode::NOT_FOUND,
+                Json(ErrorResponse::new(&format!(
+                    "Instance '{}' not found",
+                    instance_id
+                ))),
+            )
+        })?;
+
     // Create solve pipeline and execute
     let pipeline = SolvePipeline::new(&commit_data);
 
     // Execute solve with objectives and/or derived properties if provided
     let artifact = pipeline
-        .solve_instance_with_multiple_objectives_and_derived_properties(
+        .solve_instance_with_constraints(
             solve_request,
             instance_id,
             vec![("default".to_string(), objective)],
             derived_properties,
+            |_model, _mappings| {
+                // Edit the domain for every variable in the local_domains
+                for var in target_instance.local_domains.iter() {
+                    _model.set_bounds(
+                        var.id.as_str(),
+                        (var.domain.lower.into(), var.domain.upper.into()),
+                    );
+                }
+                Ok(())
+            },
         )
         .map_err(|e| {
             // Check if this is an unsatisfiable constraints error (client error)
