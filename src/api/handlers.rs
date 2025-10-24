@@ -7225,10 +7225,14 @@ pub async fn list_instances<S: Store>(
     let schema = working_commit.schema_data.clone();
 
     // Filter instances by type/class if specified
-    let filtered_instances: Vec<_> = if let Some(ref class_id) = query.class_id {
+    let filtered_instances: Vec<_> = if let Some(class_id) = query.class_id {
+        let class_ids: Vec<String> = class_id
+            .split(',')
+            .map(|s| s.trim().to_string())
+            .collect();
         instances
             .into_iter()
-            .filter(|inst| &inst.class_id == class_id)
+            .filter(|inst| class_ids.contains(&inst.class_id))
             .collect()
     } else {
         instances
@@ -7585,10 +7589,14 @@ pub async fn list_database_instances<S: Store>(
     let schema = working_commit.schema_data.clone();
 
     // Filter instances by type/class if specified
-    let filtered_instances: Vec<_> = if let Some(ref class_id) = query.class_id {
+    let filtered_instances: Vec<_> = if let Some(class_id) = query.class_id {
+        let class_ids: Vec<String> = class_id
+            .split(',')
+            .map(|s| s.trim().to_string())
+            .collect();
         instances
             .into_iter()
-            .filter(|inst| &inst.class_id == class_id)
+            .filter(|inst| class_ids.contains(&inst.class_id))
             .collect()
     } else {
         instances
@@ -10077,10 +10085,14 @@ pub async fn get_commit_instances<S: CommitStore + DatabaseStore>(
 
                 // Filter instances by class if specified
                 let instances = if let Some(class_id) = query.class_id {
+                    let class_ids: Vec<String> = class_id
+                        .split(',')
+                        .map(|s| s.trim().to_string())
+                        .collect();
                     commit_data
                         .instances
                         .into_iter()
-                        .filter(|instance| instance.class_id == class_id)
+                        .filter(|instance| class_ids.contains(&instance.class_id))
                         .collect()
                 } else {
                     commit_data.instances
@@ -12457,9 +12469,13 @@ pub async fn list_working_commit_instances<S: WorkingCommitStore + Store + Branc
         // Filter instances by class if specified
         let mut instances = working_commit.instances_data.clone();
         if let Some(class_id) = query.class_id {
+            let class_ids: Vec<String> = class_id
+                .split(',')
+                .map(|s| s.trim().to_string())
+                .collect();
             instances = instances
                 .into_iter()
-                .filter(|i| i.class_id == class_id)
+                .filter(|i| class_ids.contains(&i.class_id))
                 .collect();
         }
         let mut expanded_instances = Vec::new();
