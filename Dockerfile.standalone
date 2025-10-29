@@ -63,7 +63,7 @@ ENV PKG_CONFIG_PATH=/usr/lib/pkgconfig:/usr/lib/x86_64-linux-gnu/pkgconfig:/usr/
 ENV DATABASE_URL="postgresql://oatadmin:embedded@localhost:5432/oatdb"
 
 # Install sqlx-cli
-RUN cargo install sqlx-cli --no-default-features --features postgres
+RUN cargo install sqlx-cli --no-default-features --features postgres --locked
 
 # Start PostgreSQL, run migrations, and build the app
 RUN service postgresql start && \

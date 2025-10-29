@@ -7224,23 +7224,10 @@ pub async fn list_instances<S: Store>(
     let instances = working_commit.instances_data.clone();
     let schema = working_commit.schema_data.clone();
 
-    // Filter instances by type/class if specified
-    let filtered_instances: Vec<_> = if let Some(class_id) = query.class_id {
-        let class_ids: Vec<String> = class_id
-            .split(',')
-            .map(|s| s.trim().to_string())
-            .collect();
-        instances
-            .into_iter()
-            .filter(|inst| class_ids.contains(&inst.class_id))
-            .collect()
-    } else {
-        instances
-    };
-
+    // Expand all instances first (needed for proper relationship resolution)
     let mut expanded_instances = Vec::new();
-    for instance in filtered_instances.clone() {
-        match Expander::expand_instance(&instance, &filtered_instances, &schema).await {
+    for instance in &instances {
+        match Expander::expand_instance(instance, &instances, &schema).await {
             Ok(expanded) => expanded_instances.push(expanded),
             Err(e) => {
                 return Err((
@@ -7251,9 +7238,23 @@ pub async fn list_instances<S: Store>(
         }
     }
 
-    let total = expanded_instances.len();
+    // Filter expanded instances by type/class if specified
+    let filtered_instances = if let Some(class_id) = query.class_id {
+        let class_ids: Vec<String> = class_id
+            .split(',')
+            .map(|s| s.trim().to_string())
+            .collect();
+        expanded_instances
+            .into_iter()
+            .filter(|inst| class_ids.contains(&inst.class_id))
+            .collect()
+    } else {
+        expanded_instances
+    };
+
+    let total = filtered_instances.len();
     Ok(Json(ListResponse {
-        items: expanded_instances,
+        items: filtered_instances,
         total,
     }))
 }
@@ -7588,24 +7589,11 @@ pub async fn list_database_instances<S: Store>(
     let instances = working_commit.instances_data.clone();
     let schema = working_commit.schema_data.clone();
 
-    // Filter instances by type/class if specified
-    let filtered_instances: Vec<_> = if let Some(class_id) = query.class_id {
-        let class_ids: Vec<String> = class_id
-            .split(',')
-            .map(|s| s.trim().to_string())
-            .collect();
-        instances
-            .into_iter()
-            .filter(|inst| class_ids.contains(&inst.class_id))
-            .collect()
-    } else {
-        instances
-    };
-
-    let mut instance_responses = Vec::new();
-    for instance in filtered_instances.clone() {
-        match Expander::expand_instance(&instance, &filtered_instances, &schema).await {
-            Ok(expanded) => instance_responses.push(InstanceResponse::Expanded(expanded)),
+    // Expand all instances first (needed for proper relationship resolution)
+    let mut expanded_instances = Vec::new();
+    for instance in &instances {
+        match Expander::expand_instance(instance, &instances, &schema).await {
+            Ok(expanded) => expanded_instances.push(InstanceResponse::Expanded(expanded)),
             Err(e) => {
                 return Err((
                     StatusCode::INTERNAL_SERVER_ERROR,
@@ -7614,6 +7602,23 @@ pub async fn list_database_instances<S: Store>(
             }
         }
     }
+
+    // Filter expanded instances by type/class if specified
+    let instance_responses = if let Some(class_id) = query.class_id {
+        let class_ids: Vec<String> = class_id
+            .split(',')
+            .map(|s| s.trim().to_string())
+            .collect();
+        expanded_instances
+            .into_iter()
+            .filter(|inst| match inst {
+                InstanceResponse::Expanded(exp) => class_ids.contains(&exp.class_id),
+                InstanceResponse::Raw(raw) => class_ids.contains(&raw.class_id),
+            })
+            .collect()
+    } else {
+        expanded_instances
+    };
 
     let total = instance_responses.len();
     Ok(Json(ListResponse {
@@ -12466,23 +12471,11 @@ pub async fn list_working_commit_instances<S: WorkingCommitStore + Store + Branc
             serde_json::to_value(changes.instance_changes).unwrap(),
         ))
     } else {
-        // Filter instances by class if specified
-        let mut instances = working_commit.instances_data.clone();
-        if let Some(class_id) = query.class_id {
-            let class_ids: Vec<String> = class_id
-                .split(',')
-                .map(|s| s.trim().to_string())
-                .collect();
-            instances = instances
-                .into_iter()
-                .filter(|i| class_ids.contains(&i.class_id))
-                .collect();
-        }
-        let mut expanded_instances = Vec::new();
-
-        // Get schema for expansion
+        let instances = working_commit.instances_data.clone();
         let schema = working_commit.schema_data.clone();
 
+        // Expand all instances first (needed for proper relationship resolution)
+        let mut expanded_instances = Vec::new();
         for instance in &instances {
             match Expander::expand_instance(instance, &instances, &schema).await {
                 Ok(expanded) => expanded_instances.push(expanded),
@@ -12490,10 +12483,24 @@ pub async fn list_working_commit_instances<S: WorkingCommitStore + Store + Branc
             }
         }
 
-        let total = expanded_instances.len();
+        // Filter expanded instances by class if specified
+        let filtered_instances = if let Some(class_id) = query.class_id {
+            let class_ids: Vec<String> = class_id
+                .split(',')
+                .map(|s| s.trim().to_string())
+                .collect();
+            expanded_instances
+                .into_iter()
+                .filter(|i| class_ids.contains(&i.class_id))
+                .collect()
+        } else {
+            expanded_instances
+        };
+
+        let total = filtered_instances.len();
         Ok(Json(
             serde_json::to_value(ListResponse {
-                items: expanded_instances,
+                items: filtered_instances,
                 total,
             })
             .unwrap(),
