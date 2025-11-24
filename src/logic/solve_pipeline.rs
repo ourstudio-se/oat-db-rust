@@ -477,7 +477,11 @@ impl<'a> SolvePipeline<'a> {
                             }
                         };
                         if solution.get(&id.to_string()) >= Some(&1) {
-                            values.push(value.clone());
+                            // Add equally many times as in the solution
+                            // This handles both in case of numeric, string, and boolean occurrences
+                            for _ in 0..*solution.get(&id.to_string()).unwrap() {
+                                values.push(value.clone());
+                            }
                         }
                     } else if let Some(default_prop) = class_def
                         .properties
@@ -673,36 +677,54 @@ impl<'a> SolvePipeline<'a> {
                     .collect();
 
                 // Create constraint based on quantifier
-                let constraint_id = match &rel_def.quantifier {
+                match &rel_def.quantifier {
                     Quantifier::One => {
                         if pldag_vars.len() == 1 {
                             // For a single variable with One quantifier, just use the variable itself
                             // This allows it to work properly with base.op like Imply
-                            pldag_vars[0].to_string()
+                            constraint_ids.push(pldag_vars[0].to_string());
                         } else {
                             // For multiple variables, enforce exactly one must be selected
-                            model.set_equal(pldag_vars, 1)
+                            constraint_ids.push(model.set_equal(pldag_vars, 1)
                                 .ok_or_else(|| anyhow::anyhow!(
                                     "Failed to create 'equal' constraint for relationship '{}' (One quantifier)",
                                     rel_def.id
-                                ))?
+                                ))?);
                         }
                     }
-                    Quantifier::AtLeast(n) => model.set_atleast(pldag_vars, *n as i64)
-                        .ok_or_else(|| anyhow::anyhow!(
-                            "Failed to create 'at least {}' constraint for relationship '{}'",
-                            n, rel_def.id
-                        ))?,
-                    Quantifier::AtMost(n) => model.set_atmost(pldag_vars, *n as i64)
-                        .ok_or_else(|| anyhow::anyhow!(
-                            "Failed to create 'at most {}' constraint for relationship '{}'",
-                            n, rel_def.id
-                        ))?,
-                    Quantifier::Exactly(n) => model.set_equal(pldag_vars, *n as i64)
-                        .ok_or_else(|| anyhow::anyhow!(
-                            "Failed to create 'exactly {}' constraint for relationship '{}'",
-                            n, rel_def.id
-                        ))?,
+                    Quantifier::AtLeast(n) => {
+                        constraint_ids.push(model.set_atleast(pldag_vars, *n as i64).ok_or_else(
+                            || {
+                                anyhow::anyhow!(
+                                "Failed to create 'at least {}' constraint for relationship '{}'",
+                                n,
+                                rel_def.id
+                            )
+                            },
+                        )?);
+                    }
+                    Quantifier::AtMost(n) => {
+                        constraint_ids.push(model.set_atmost(pldag_vars, *n as i64).ok_or_else(
+                            || {
+                                anyhow::anyhow!(
+                                "Failed to create 'at most {}' constraint for relationship '{}'",
+                                n,
+                                rel_def.id
+                            )
+                            },
+                        )?);
+                    }
+                    Quantifier::Exactly(n) => {
+                        constraint_ids.push(model.set_equal(pldag_vars, *n as i64).ok_or_else(
+                            || {
+                                anyhow::anyhow!(
+                                "Failed to create 'exactly {}' constraint for relationship '{}'",
+                                n,
+                                rel_def.id
+                            )
+                            },
+                        )?);
+                    }
                     Quantifier::Range(min, max) => {
                         let min_id = model.set_atleast(pldag_vars.clone(), *min as i64)
                             .ok_or_else(|| anyhow::anyhow!(
@@ -714,30 +736,33 @@ impl<'a> SolvePipeline<'a> {
                                 "Failed to create 'at most {}' constraint for relationship '{}' (Range)",
                                 max, rel_def.id
                             ))?;
-                        model.set_and(vec![min_id, max_id])
-                            .ok_or_else(|| anyhow::anyhow!(
+                        constraint_ids.push(model.set_and(vec![min_id, max_id]).ok_or_else(
+                            || {
+                                anyhow::anyhow!(
                                 "Failed to create 'and' constraint for relationship '{}' (Range)",
                                 rel_def.id
-                            ))?
+                            )
+                            },
+                        )?);
                     }
-                    Quantifier::Optional => model.set_atleast(pldag_vars, 0)
-                        .ok_or_else(|| anyhow::anyhow!(
-                            "Failed to create 'at least 0' constraint for relationship '{}' (Optional)",
-                            rel_def.id
-                        ))?,
-                    Quantifier::Any => model.set_or(pldag_vars)
-                        .ok_or_else(|| anyhow::anyhow!(
-                            "Failed to create 'or' constraint for relationship '{}' (Any)",
-                            rel_def.id
-                        ))?,
-                    Quantifier::All => model.set_and(pldag_vars)
-                        .ok_or_else(|| anyhow::anyhow!(
-                            "Failed to create 'and' constraint for relationship '{}' (All)",
-                            rel_def.id
-                        ))?,
+                    Quantifier::Optional => {} // No constraint needed for optional
+                    Quantifier::Any => {
+                        constraint_ids.push(model.set_or(pldag_vars).ok_or_else(|| {
+                            anyhow::anyhow!(
+                                "Failed to create 'or' constraint for relationship '{}' (Any)",
+                                rel_def.id
+                            )
+                        })?);
+                    }
+                    Quantifier::All => {
+                        constraint_ids.push(model.set_and(pldag_vars).ok_or_else(|| {
+                            anyhow::anyhow!(
+                                "Failed to create 'and' constraint for relationship '{}' (All)",
+                                rel_def.id
+                            )
+                        })?)
+                    }
                 };
-
-                constraint_ids.push(constraint_id);
             }
         }
 
